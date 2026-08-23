@@ -6939,12 +6939,12 @@ def _buscar_record_apoia_por_texto(busca_texto, sessao):
         return None
     import base64
     from django.db.models import Q
-    from crm_app.models import <<KEEP_CLICKUPAPOIA>>
+    from crm_app.models import RecordApoia
 
     from crm_app.record_apoia_api import record_apoia_disponivel, record_apoia_ler_bytes
 
     busca_texto = busca_texto.strip()
-    arquivos_qs = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=True).filter(
+    arquivos_qs = RecordApoia.objects.filter(ativo=True).filter(
         Q(tags__icontains=busca_texto) |
         Q(titulo__icontains=busca_texto) |
         Q(descricao__icontains=busca_texto) |
@@ -10812,7 +10812,7 @@ def processar_webhook_whatsapp(data, request=None):
                 elif not numero_escolhido.isdigit():
                     resposta = "❌ Por favor, digite apenas o NÚMERO do material (ex: 1, 2, 3...):"
                 else:
-                    from crm_app.models import <<KEEP_CLICKUPAPOIA>>
+                    from crm_app.models import RecordApoia
                     import base64
                     
                     # Buscar sessão diretamente do banco para garantir dados mais recentes
@@ -10847,7 +10847,7 @@ def processar_webhook_whatsapp(data, request=None):
                         resposta = None
                     else:
                         arquivo_id = arquivos_ids[idx]
-                        arquivo = <<KEEP_CLICKUPAPOIA>>.objects.get(id=arquivo_id, ativo=True)
+                        arquivo = RecordApoia.objects.get(id=arquivo_id, ativo=True)
                         arquivo.downloads_count += 1
                         arquivo.save(update_fields=['downloads_count'])
                         

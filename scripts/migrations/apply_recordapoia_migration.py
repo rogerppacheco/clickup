@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Script para aplicar a migração <<KEEP_CLICKUPAPOIA>> de verdade.
+Script para aplicar a migração RecordApoia de verdade.
 Remove a marcação fake e aplica a migração real.
 
 Uso (a partir da raiz do projeto):
@@ -24,7 +24,7 @@ from django.core.management import call_command
 def apply_recordapoia_migration():
     """Remove marcação fake e aplica migração de verdade."""
     print("=" * 80)
-    print("🔧 APLICANDO MIGRAÇÃO <<KEEP_CLICKUPAPOIA>> (0071)")
+    print("🔧 APLICANDO MIGRAÇÃO RecordApoia (0071)")
     print("=" * 80)
 
     with connection.cursor() as cursor:

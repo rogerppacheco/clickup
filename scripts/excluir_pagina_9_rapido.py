@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Script que marca como inativo os registros <<KEEP_CLICKUPAPOIA>> com nome_original
+Script que marca como inativo os registros RecordApoia com nome_original
 contendo 'pagina_9.jpg'. Execução direta, sem confirmação.
 
 Recomendado: usar o comando Django (equivalente):
@@ -20,9 +20,9 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "gestao_equipes.settings")
 import django
 django.setup()
 
-from crm_app.models import <<KEEP_CLICKUPAPOIA>>
+from crm_app.models import RecordApoia
 
-arquivos = <<KEEP_CLICKUPAPOIA>>.objects.filter(nome_original__icontains="pagina_9.jpg")
+arquivos = RecordApoia.objects.filter(nome_original__icontains="pagina_9.jpg")
 print(f"Encontrados {arquivos.count()} arquivo(s):")
 for arq in arquivos:
     print(f"  ID: {arq.id}, Titulo: {arq.titulo}, Nome: {arq.nome_original}")

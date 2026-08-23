@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Script para verificar se a tabela <<KEEP_CLICKUPAPOIA>> existe no banco.
+Script para verificar se a tabela RecordApoia existe no banco.
 
 Uso (a partir da raiz do projeto):
     python scripts/migrations/check_recordapoia_table.py

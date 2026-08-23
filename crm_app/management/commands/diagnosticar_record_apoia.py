@@ -1,14 +1,14 @@
 """
-Comando de diagnóstico para <<KEEP_CLICKUPAPOIA>>
+Comando de diagnóstico para RecordApoia
 Verifica quantos arquivos estão no banco vs no disco e identifica problemas
 """
 from django.core.management.base import BaseCommand
 from django.conf import settings
-from crm_app.models import <<KEEP_CLICKUPAPOIA>>
+from crm_app.models import RecordApoia
 import os
 
 class Command(BaseCommand):
-    help = 'Diagnóstico completo de arquivos <<KEEP_CLICKUPAPOIA>> (banco vs disco)'
+    help = 'Diagnóstico completo de arquivos RecordApoia (banco vs disco)'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -30,16 +30,16 @@ class Command(BaseCommand):
         self.stdout.write(f"MEDIA_ROOT: {media_root}\n")
 
         # Estatísticas gerais
-        total_banco = <<KEEP_CLICKUPAPOIA>>.objects.count()
-        total_ativos_banco = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=True).count()
-        total_inativos_banco = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=False).count()
+        total_banco = RecordApoia.objects.count()
+        total_ativos_banco = RecordApoia.objects.filter(ativo=True).count()
+        total_inativos_banco = RecordApoia.objects.filter(ativo=False).count()
 
         self.stdout.write(f"Total no banco: {total_banco}")
         self.stdout.write(f"  - Ativos: {total_ativos_banco}")
         self.stdout.write(f"  - Inativos: {total_inativos_banco}\n")
 
         # Verificar arquivos ativos
-        arquivos_ativos = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=True)
+        arquivos_ativos = RecordApoia.objects.filter(ativo=True)
         arquivos_ativos_ok = 0
         arquivos_ativos_faltando = []
 
@@ -68,7 +68,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"  ... e mais {len(arquivos_ativos_faltando) - 10} arquivos\n")
 
         # Verificar arquivos inativos
-        arquivos_inativos = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=False)
+        arquivos_inativos = RecordApoia.objects.filter(ativo=False)
         arquivos_inativos_com_arquivo = []
         arquivos_inativos_sem_arquivo = []
 
@@ -106,7 +106,7 @@ class Command(BaseCommand):
             
             if confirmacao == 'SIM':
                 ids_para_reativar = [arq['id'] for arq in arquivos_inativos_com_arquivo]
-                <<KEEP_CLICKUPAPOIA>>.objects.filter(id__in=ids_para_reativar).update(ativo=True)
+                RecordApoia.objects.filter(id__in=ids_para_reativar).update(ativo=True)
                 self.stdout.write(self.style.SUCCESS(f"Reativados {len(ids_para_reativar)} arquivo(s)!"))
             else:
                 self.stdout.write(self.style.WARNING("Operacao cancelada."))

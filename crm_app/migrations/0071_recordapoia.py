@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='<<KEEP_CLICKUPAPOIA>>',
+            name='RecordApoia',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('arquivo', models.FileField(help_text='Arquivo a ser armazenado', upload_to='record_apoia/%Y/%m/%d/')),

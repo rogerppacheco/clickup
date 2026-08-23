@@ -1,9 +1,9 @@
 from django.core.management.base import BaseCommand
-from crm_app.models import <<KEEP_CLICKUPAPOIA>>
+from crm_app.models import RecordApoia
 
 
 class Command(BaseCommand):
-    help = 'Exclui arquivo pagina_9.jpg do <<KEEP_CLICKUPAPOIA>>'
+    help = 'Exclui arquivo pagina_9.jpg do RecordApoia'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -17,7 +17,7 @@ class Command(BaseCommand):
         self.stdout.write("SCRIPT DE EXCLUSÃO - pagina_9.jpg")
         self.stdout.write("=" * 60)
         
-        arquivos = <<KEEP_CLICKUPAPOIA>>.objects.filter(nome_original__icontains='pagina_9.jpg')
+        arquivos = RecordApoia.objects.filter(nome_original__icontains='pagina_9.jpg')
         
         if not arquivos.exists():
             self.stdout.write(self.style.WARNING("Nenhum arquivo 'pagina_9.jpg' encontrado."))

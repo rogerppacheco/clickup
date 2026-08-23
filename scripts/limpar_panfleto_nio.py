@@ -14,14 +14,14 @@ if str(BASE_DIR) not in sys.path:
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "gestao_equipes.settings")
 django.setup()
 
-from crm_app.models import <<KEEP_CLICKUPAPOIA>>
+from crm_app.models import RecordApoia
 from django.db.models import Q
 
 def buscar_panfleto():
     """Busca arquivos com PANFLETO no título ou nome"""
     print("🔍 Buscando arquivos com 'PANFLETO' no título ou nome...")
     
-    arquivos = <<KEEP_CLICKUPAPOIA>>.objects.filter(
+    arquivos = RecordApoia.objects.filter(
         Q(titulo__icontains='PANFLETO') | Q(nome_original__icontains='PANFLETO')
     )
     
@@ -69,11 +69,11 @@ def remover_panfleto(confirmar=True):
     with transaction.atomic():
         for info in arquivos:
             try:
-                arq = <<KEEP_CLICKUPAPOIA>>.objects.get(id=info['id'])
+                arq = RecordApoia.objects.get(id=info['id'])
                 titulo = arq.titulo
                 arq.delete()  # Remove definitivamente
                 print(f"✅ Removido: {titulo} (ID: {info['id']})")
-            except <<KEEP_CLICKUPAPOIA>>.DoesNotExist:
+            except RecordApoia.DoesNotExist:
                 print(f"⚠️  Arquivo ID {info['id']} não encontrado (já foi removido?)")
             except Exception as e:
                 print(f"❌ Erro ao remover ID {info['id']}: {e}")

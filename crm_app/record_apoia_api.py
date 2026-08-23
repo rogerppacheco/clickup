@@ -11,7 +11,7 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import <<KEEP_CLICKUPAPOIA>>
+from .models import RecordApoia
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def espelhar_record_apoia_r2(arquivo_record, conteudo_bytes):
         )
         return None
 
-class <<KEEP_CLICKUPAPOIA>>UploadView(APIView):
+class RecordApoiaUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -148,7 +148,7 @@ class <<KEEP_CLICKUPAPOIA>>UploadView(APIView):
                     arquivo.seek(0)
 
                     # Criar registro
-                    record = <<KEEP_CLICKUPAPOIA>>.objects.create(
+                    record = RecordApoia.objects.create(
                         titulo=titulo_arquivo,
                         descricao=descricao,
                         categoria=categoria,
@@ -210,7 +210,7 @@ class <<KEEP_CLICKUPAPOIA>>UploadView(APIView):
             return Response({'error': str(e)}, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>ListView(APIView):
+class RecordApoiaListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -219,7 +219,7 @@ class <<KEEP_CLICKUPAPOIA>>ListView(APIView):
             busca = request.query_params.get('busca', '').strip()
             categoria_filtro = request.query_params.get('categoria', '').strip()
             
-            queryset = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=True)
+            queryset = RecordApoia.objects.filter(ativo=True)
             
             if busca:
                 queryset = queryset.filter(
@@ -300,7 +300,7 @@ class <<KEEP_CLICKUPAPOIA>>ListView(APIView):
                     continue
             
             # Obter categorias únicas para filtros
-            categorias = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=True).exclude(categoria__isnull=True).exclude(categoria='').values_list('categoria', flat=True).distinct()
+            categorias = RecordApoia.objects.filter(ativo=True).exclude(categoria__isnull=True).exclude(categoria='').values_list('categoria', flat=True).distinct()
             categorias = sorted(set(categorias))
             
             # Paginação simples
@@ -330,13 +330,13 @@ class <<KEEP_CLICKUPAPOIA>>ListView(APIView):
             }, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>EditView(APIView):
+class RecordApoiaEditView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, arquivo_id):
         # ClickUp Apoia é acessível a todos os usuários autenticados
         try:
-            arquivo = <<KEEP_CLICKUPAPOIA>>.objects.get(id=arquivo_id)
+            arquivo = RecordApoia.objects.get(id=arquivo_id)
             
             titulo = request.data.get('titulo', '').strip()
             descricao = request.data.get('descricao', '').strip()
@@ -366,20 +366,20 @@ class <<KEEP_CLICKUPAPOIA>>EditView(APIView):
                 }
             })
             
-        except <<KEEP_CLICKUPAPOIA>>.DoesNotExist:
+        except RecordApoia.DoesNotExist:
             return Response({'error': 'Arquivo não encontrado'}, status=404)
         except Exception as e:
             logger.error(f"Erro ao editar: {e}")
             return Response({'error': str(e)}, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>ToggleActiveView(APIView):
+class RecordApoiaToggleActiveView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, arquivo_id):
         """Inativa ou ativa um arquivo (toggle do campo ativo)"""
         try:
-            arquivo = <<KEEP_CLICKUPAPOIA>>.objects.get(id=arquivo_id)
+            arquivo = RecordApoia.objects.get(id=arquivo_id)
             
             # Alternar estado ativo
             arquivo.ativo = not arquivo.ativo
@@ -393,20 +393,20 @@ class <<KEEP_CLICKUPAPOIA>>ToggleActiveView(APIView):
                 'ativo': arquivo.ativo
             })
             
-        except <<KEEP_CLICKUPAPOIA>>.DoesNotExist:
+        except RecordApoia.DoesNotExist:
             return Response({'error': 'Arquivo não encontrado'}, status=404)
         except Exception as e:
             logger.error(f"Erro ao alterar status: {e}")
             return Response({'error': str(e)}, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>DeleteView(APIView):
+class RecordApoiaDeleteView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request, arquivo_id):
         # ClickUp Apoia é acessível a todos os usuários autenticados
         try:
-            arquivo = <<KEEP_CLICKUPAPOIA>>.objects.get(id=arquivo_id)
+            arquivo = RecordApoia.objects.get(id=arquivo_id)
             
             # Deletar arquivo físico do disco (se existir)
             if arquivo.arquivo and arquivo.arquivo.name:
@@ -424,14 +424,14 @@ class <<KEEP_CLICKUPAPOIA>>DeleteView(APIView):
             
             return Response({'sucesso': True, 'mensagem': 'Arquivo removido com sucesso'})
             
-        except <<KEEP_CLICKUPAPOIA>>.DoesNotExist:
+        except RecordApoia.DoesNotExist:
             return Response({'error': 'Arquivo não encontrado'}, status=404)
         except Exception as e:
             logger.error(f"Erro ao deletar: {e}")
             return Response({'error': str(e)}, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>DiagnosticoView(APIView):
+class RecordApoiaDiagnosticoView(APIView):
     """
     View para diagnosticar problemas com arquivos do ClickUp Apoia.
     Verifica se os arquivos físicos existem no servidor.
@@ -445,7 +445,7 @@ class <<KEEP_CLICKUPAPOIA>>DiagnosticoView(APIView):
             import os
             
             # Buscar todos os arquivos ativos
-            arquivos = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=True)
+            arquivos = RecordApoia.objects.filter(ativo=True)
             
             diagnosticos = {
                 'total_arquivos': arquivos.count(),
@@ -512,7 +512,7 @@ class <<KEEP_CLICKUPAPOIA>>DiagnosticoView(APIView):
             }, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>BuscarView(APIView):
+class RecordApoiaBuscarView(APIView):
     """
     View para buscar arquivos específicos no ClickUp Apoia (incluindo inativos).
     Útil para encontrar e limpar arquivos problemáticos.
@@ -528,7 +528,7 @@ class <<KEEP_CLICKUPAPOIA>>BuscarView(APIView):
             if not busca:
                 return Response({'error': 'Parâmetro "busca" é obrigatório'}, status=400)
             
-            queryset = <<KEEP_CLICKUPAPOIA>>.objects.all()
+            queryset = RecordApoia.objects.all()
             
             if not incluir_inativos:
                 queryset = queryset.filter(ativo=True)
@@ -560,7 +560,7 @@ class <<KEEP_CLICKUPAPOIA>>BuscarView(APIView):
             return Response({'error': str(e)}, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>AdminOrfaosView(APIView):
+class RecordApoiaAdminOrfaosView(APIView):
     """
     View administrativa para listar arquivos órfãos:
     - Arquivos inativos que ainda têm arquivo no disco (podem ser limpos)
@@ -588,7 +588,7 @@ class <<KEEP_CLICKUPAPOIA>>AdminOrfaosView(APIView):
             ativos_sem_arquivo = []
             
             # Buscar todos os arquivos
-            todos_arquivos = <<KEEP_CLICKUPAPOIA>>.objects.all()
+            todos_arquivos = RecordApoia.objects.all()
             
             for arquivo in todos_arquivos:
                 arquivo_existe = False
@@ -642,7 +642,7 @@ class <<KEEP_CLICKUPAPOIA>>AdminOrfaosView(APIView):
             }, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>AdminLimparOrfaosView(APIView):
+class RecordApoiaAdminLimparOrfaosView(APIView):
     """
     View administrativa para limpar arquivos órfãos:
     - Deletar arquivos físicos de registros inativos
@@ -672,7 +672,7 @@ class <<KEEP_CLICKUPAPOIA>>AdminLimparOrfaosView(APIView):
             
             if tipo_limpeza in ['inativos', 'todos']:
                 # Limpar arquivos físicos de registros inativos
-                inativos = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=False)
+                inativos = RecordApoia.objects.filter(ativo=False)
                 for arquivo in inativos:
                     if arquivo.arquivo and arquivo.arquivo.name:
                         try:
@@ -697,7 +697,7 @@ class <<KEEP_CLICKUPAPOIA>>AdminLimparOrfaosView(APIView):
             
             if tipo_limpeza in ['sem_arquivo', 'todos']:
                 # Deletar registros ativos que não têm arquivo no disco
-                todos_ativos = <<KEEP_CLICKUPAPOIA>>.objects.filter(ativo=True)
+                todos_ativos = RecordApoia.objects.filter(ativo=True)
                 for arquivo in todos_ativos:
                     if arquivo.arquivo and arquivo.arquivo.name:
                         arquivo_existe = False
@@ -743,13 +743,13 @@ class <<KEEP_CLICKUPAPOIA>>AdminLimparOrfaosView(APIView):
             }, status=500)
 
 
-class <<KEEP_CLICKUPAPOIA>>DownloadView(APIView):
+class RecordApoiaDownloadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, arquivo_id):
         # ClickUp Apoia é acessível a todos os usuários autenticados
         try:
-            arquivo = <<KEEP_CLICKUPAPOIA>>.objects.get(id=arquivo_id, ativo=True)
+            arquivo = RecordApoia.objects.get(id=arquivo_id, ativo=True)
             
             if not record_apoia_disponivel(arquivo):
                 return Response({'error': 'Arquivo não encontrado no servidor'}, status=404)
@@ -801,7 +801,7 @@ class <<KEEP_CLICKUPAPOIA>>DownloadView(APIView):
                 logger.error(f"Erro ao abrir arquivo: {e}")
                 return Response({'error': f'Erro ao acessar arquivo: {str(e)}'}, status=500)
             
-        except <<KEEP_CLICKUPAPOIA>>.DoesNotExist:
+        except RecordApoia.DoesNotExist:
             return Response({'error': 'Arquivo não encontrado'}, status=404)
         except Exception as e:
             logger.error(f"Erro ao fazer download: {e}")

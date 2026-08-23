@@ -4394,7 +4394,7 @@ class LogImportacaoRecompra(models.Model):
         return f"{self.nome_arquivo} - {self.status} ({self.iniciado_em.strftime('%d/%m/%Y %H:%M')})"
 
 
-class <<KEEP_CLICKUPAPOIA>>(models.Model):
+class RecordApoia(models.Model):
     """Repositório de arquivos Apoia - Acesso público para todos os usuários"""
     
     TIPO_ARQUIVO_CHOICES = [

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Script para excluir o arquivo pagina_9.jpg do <<KEEP_CLICKUPAPOIA>>
+Script para excluir o arquivo pagina_9.jpg do RecordApoia
 """
 import os
 import sys
@@ -11,11 +11,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'site_record.settings')
 django.setup()
 
-from crm_app.models import <<KEEP_CLICKUPAPOIA>>
+from crm_app.models import RecordApoia
 
 def excluir_pagina_9():
     """Exclui arquivos com nome_original contendo 'pagina_9.jpg'"""
-    arquivos = <<KEEP_CLICKUPAPOIA>>.objects.filter(nome_original__icontains='pagina_9.jpg')
+    arquivos = RecordApoia.objects.filter(nome_original__icontains='pagina_9.jpg')
     
     if not arquivos.exists():
         print("❌ Nenhum arquivo 'pagina_9.jpg' encontrado.")

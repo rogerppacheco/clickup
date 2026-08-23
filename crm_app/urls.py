@@ -9,16 +9,16 @@ from usuarios.views import LoginView, DefinirNovaSenhaView
 from .esteira_gestao_aproveitamento_api import GestaoAproveitamentoEsteiraView
 from .esteira_churn_tratamento_api import EsteiraChurnTratamentoView
 from .record_apoia_api import (
-    <<KEEP_CLICKUPAPOIA>>UploadView,
-    <<KEEP_CLICKUPAPOIA>>ListView,
-    <<KEEP_CLICKUPAPOIA>>DownloadView,
-    <<KEEP_CLICKUPAPOIA>>DeleteView,
-    <<KEEP_CLICKUPAPOIA>>EditView,
-    <<KEEP_CLICKUPAPOIA>>ToggleActiveView,
-    <<KEEP_CLICKUPAPOIA>>DiagnosticoView,
-    <<KEEP_CLICKUPAPOIA>>BuscarView,
-    <<KEEP_CLICKUPAPOIA>>AdminOrfaosView,
-    <<KEEP_CLICKUPAPOIA>>AdminLimparOrfaosView,
+    RecordApoiaUploadView,
+    RecordApoiaListView,
+    RecordApoiaDownloadView,
+    RecordApoiaDeleteView,
+    RecordApoiaEditView,
+    RecordApoiaToggleActiveView,
+    RecordApoiaDiagnosticoView,
+    RecordApoiaBuscarView,
+    RecordApoiaAdminOrfaosView,
+    RecordApoiaAdminLimparOrfaosView,
 )
 
 # IMPORTAÇÕES ESPECÍFICAS DE VIEWS
@@ -449,16 +449,16 @@ urlpatterns = [
     path('logs-recompra/', LogsImportacaoRecompraView.as_view(), name='logs-recompra'),
     
     # --- CLICKUP APOIA (Repositório de Arquivos) ---
-    path('record-apoia/upload/', <<KEEP_CLICKUPAPOIA>>UploadView.as_view(), name='record-apoia-upload'),
-    path('record-apoia/list/', <<KEEP_CLICKUPAPOIA>>ListView.as_view(), name='record-apoia-list'),
-    path('record-apoia/download/<int:arquivo_id>/', <<KEEP_CLICKUPAPOIA>>DownloadView.as_view(), name='record-apoia-download'),
-    path('record-apoia/edit/<int:arquivo_id>/', <<KEEP_CLICKUPAPOIA>>EditView.as_view(), name='record-apoia-edit'),
-    path('record-apoia/toggle-active/<int:arquivo_id>/', <<KEEP_CLICKUPAPOIA>>ToggleActiveView.as_view(), name='record-apoia-toggle-active'),
-    path('record-apoia/delete/<int:arquivo_id>/', <<KEEP_CLICKUPAPOIA>>DeleteView.as_view(), name='record-apoia-delete'),
-    path('record-apoia/diagnostico/', <<KEEP_CLICKUPAPOIA>>DiagnosticoView.as_view(), name='record-apoia-diagnostico'),
-    path('record-apoia/buscar/', <<KEEP_CLICKUPAPOIA>>BuscarView.as_view(), name='record-apoia-buscar'),
-    path('record-apoia/admin/orfaos/', <<KEEP_CLICKUPAPOIA>>AdminOrfaosView.as_view(), name='record-apoia-admin-orfaos'),
-    path('record-apoia/admin/limpar-orfaos/', <<KEEP_CLICKUPAPOIA>>AdminLimparOrfaosView.as_view(), name='record-apoia-admin-limpar-orfaos'),
+    path('record-apoia/upload/', RecordApoiaUploadView.as_view(), name='record-apoia-upload'),
+    path('record-apoia/list/', RecordApoiaListView.as_view(), name='record-apoia-list'),
+    path('record-apoia/download/<int:arquivo_id>/', RecordApoiaDownloadView.as_view(), name='record-apoia-download'),
+    path('record-apoia/edit/<int:arquivo_id>/', RecordApoiaEditView.as_view(), name='record-apoia-edit'),
+    path('record-apoia/toggle-active/<int:arquivo_id>/', RecordApoiaToggleActiveView.as_view(), name='record-apoia-toggle-active'),
+    path('record-apoia/delete/<int:arquivo_id>/', RecordApoiaDeleteView.as_view(), name='record-apoia-delete'),
+    path('record-apoia/diagnostico/', RecordApoiaDiagnosticoView.as_view(), name='record-apoia-diagnostico'),
+    path('record-apoia/buscar/', RecordApoiaBuscarView.as_view(), name='record-apoia-buscar'),
+    path('record-apoia/admin/orfaos/', RecordApoiaAdminOrfaosView.as_view(), name='record-apoia-admin-orfaos'),
+    path('record-apoia/admin/limpar-orfaos/', RecordApoiaAdminLimparOrfaosView.as_view(), name='record-apoia-admin-limpar-orfaos'),
     
     # --- Conhecimento IA (upload PDF/Excel/PPT para alimentar o bot) ---
     path('conhecimento-ia/list/', conhecimento_ia_api.ConhecimentoIAListView.as_view(), name='conhecimento-ia-list'),
