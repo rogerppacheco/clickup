@@ -1,0 +1,11 @@
+.venv/
+venv/
+backups/
+downloads/
+media/
+site-clickup.git/
+.git/
+*.sql
+*.dump
+*.zip
+__pycache__/
