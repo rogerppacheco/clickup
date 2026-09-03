@@ -40,8 +40,9 @@ class CustomUserAdmin(UserAdmin):
                 'autorizar_analise_credito_wpp', 'autorizar_inclusao_wpp',
                 'login_pap_disponivel_para_automacao',
                 'pap_automacao_vender', 'pap_automacao_credito', 'pap_automacao_pedido', 'pap_automacao_status',
+                'autorizar_historico_pap',
             ),
-            'description': 'Login PAP: se "Disponibilizar login PAP para o bot" estiver desmarcado, o bot não usará este login. Use os checkboxes de automação para definir em quais fluxos (Vender, Crédito, Pedido, Status) este login BO pode ser usado.'
+            'description': 'Login PAP: se "Disponibilizar login PAP para o bot" estiver desmarcado, o bot não usará este login. Use os checkboxes de automação para definir em quais fluxos (Vender, Crédito, Pedido, Status) este login BO pode ser usado. "Autorizar busca do histórico PAP" libera o login Diretoria no pool do Funil.'
         }),
         ('Br Pronto PDV (Biometria)', {
             'fields': (
