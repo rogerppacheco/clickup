@@ -280,6 +280,7 @@ class FunilHistoricoPapImportarView(APIView):
                 status=400,
             )
 
+        busca_online_msg = "Busca online iniciada (pode levar 1 minuto)."
         try:
             periodo = request.data.get("periodo", "hoje")
             hoje = date.today()
@@ -292,7 +293,7 @@ class FunilHistoricoPapImportarView(APIView):
             else:
                 data_inicio = hoje
 
-            criar_e_iniciar_busca(
+            _busca_id, err_busca = criar_e_iniciar_busca(
                 request.user,
                 data_inicio=data_inicio,
                 data_fim=hoje,
@@ -300,8 +301,12 @@ class FunilHistoricoPapImportarView(APIView):
                 tipos=["VENDA"],
                 token_manual="",
             )
+            if err_busca:
+                logger.warning("Busca online do PAP não iniciada: %s", err_busca)
+                busca_online_msg = f"Busca online não iniciada: {err_busca}"
         except Exception as e:
             logger.error("Erro ao iniciar busca online do PAP: %s", e, exc_info=True)
+            busca_online_msg = f"Busca online falhou ao iniciar: {e}"
 
         pedidos = HistoricoPapPedido.objects.filter(tipo_venda="VENDA").order_by("-capturado_em")[:100]
 
@@ -323,7 +328,7 @@ class FunilHistoricoPapImportarView(APIView):
                 logger.error("Erro ao importar pedido %s: %s", p.id, e, exc_info=True)
                 falhas += 1
 
-        msg_final = f"Busca online iniciada (pode levar 1 minuto). Do banco local, {sucessos} novas vendas criadas."
+        msg_final = f"{busca_online_msg} Do banco local, {sucessos} novas vendas criadas."
         if falhas > 0:
             msg_final += f" ({falhas} com erro)."
 
