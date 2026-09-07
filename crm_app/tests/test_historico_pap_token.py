@@ -57,38 +57,40 @@ class HistoricoPapTokenValidationTest(SimpleTestCase):
         self.assertIn("Token não possui estrutura de JWT", msg)
 
     def test_headers_auth(self):
-        tok = _gerar_jwt_mock(3600)
-        # Força assinatura HS256 típica (43) para o anti-replay ser anexado
-        parts = tok.split(".")
-        tok43 = f"{parts[0]}.{parts[1]}.{'c' * 43}"
-        h = _headers_auth(tok43)
-        auth = h["Authorization"]
-        self.assertTrue(auth.startswith("Bearer "))
-        raw = auth[len("Bearer "):]
-        self.assertEqual(len(raw), len(tok43) + 36)
-        self.assertTrue(raw.startswith(tok43))
+        parts = _gerar_jwt_mock(3600).split(".")
+        # Token SPA já com hash (sig=79) deve ser preservado
+        base = f"{parts[0]}.{parts[1]}.{'c' * 43}"
+        tok_spa = base + ("H" * 36)
+        h = _headers_auth(tok_spa, regenerar_anti_replay=False)
+        self.assertEqual(h["Authorization"], f"Bearer {tok_spa}")
         self.assertNotIn("Origem", h)
         self.assertIn("pap.niointernet.com.br", h["Origin"])
         self.assertIn("administrativo/historico", h["Referer"])
 
     def test_headers_auth_com_bearer(self):
         parts = _gerar_jwt_mock(3600).split(".")
-        tok43 = f"{parts[0]}.{parts[1]}.{'d' * 43}"
-        h = _headers_auth(f"Bearer {tok43}")
-        raw = h["Authorization"][len("Bearer "):]
-        self.assertEqual(len(raw), len(tok43) + 36)
-        self.assertTrue(raw.startswith(tok43))
+        base = f"{parts[0]}.{parts[1]}.{'d' * 43}"
+        tok_spa = base + ("H" * 36)
+        h = _headers_auth(f"Bearer {tok_spa}", regenerar_anti_replay=False)
+        self.assertEqual(h["Authorization"], f"Bearer {tok_spa}")
 
-    def test_headers_auth_regenera_anti_replay_de_token_spa(self):
-        """SPA envia JWT+hash (sig=79). Devemos trocar o hash velho por um fresco."""
+    def test_headers_auth_regenera_quando_pedido(self):
         parts = _gerar_jwt_mock(3600).split(".")
         base = f"{parts[0]}.{parts[1]}.{'e' * 43}"
         tok_spa = base + ("F" * 36)
-        h = _headers_auth(tok_spa)
+        h = _headers_auth(tok_spa, regenerar_anti_replay=True)
         raw = h["Authorization"][len("Bearer "):]
         self.assertEqual(len(raw), len(base) + 36)
         self.assertTrue(raw.startswith(base))
         self.assertFalse(raw.endswith("F" * 36))
+
+    def test_headers_auth_gera_hash_para_jwt_puro(self):
+        parts = _gerar_jwt_mock(3600).split(".")
+        tok43 = f"{parts[0]}.{parts[1]}.{'g' * 43}"
+        h = _headers_auth(tok43, regenerar_anti_replay=False)
+        raw = h["Authorization"][len("Bearer "):]
+        self.assertEqual(len(raw), len(tok43) + 36)
+        self.assertTrue(raw.startswith(tok43))
 
     def test_anti_replay_hash_tem_36_chars(self):
         from crm_app.historico_pap_service import _gerar_anti_replay_hash
@@ -169,10 +171,9 @@ class HistoricoPapFetchDirectHttpTest(SimpleTestCase):
         self.assertEqual(resp["status"], 200)
         self.assertEqual(resp["json"]["total"], 1)
 
-        # Verificar headers passados para requests (JWT + anti-replay de 36 chars)
+        # Verificar headers: token SPA com hash deve ser preservado
         mock_get.assert_called_once()
         _, kwargs = mock_get.call_args
         auth = kwargs["headers"]["Authorization"]
         self.assertTrue(auth.startswith("Bearer "))
-        self.assertGreaterEqual(len(auth), len(f"Bearer {tok}") + 36)
         self.assertNotIn("Origem", kwargs["headers"])

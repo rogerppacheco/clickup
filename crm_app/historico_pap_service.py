@@ -359,12 +359,13 @@ def _gerar_anti_replay_hash() -> str:
     return base64.b64encode(bytes(encoded)).decode("utf-8")
 
 
-def _headers_auth(token: str) -> dict[str, str]:
+def _headers_auth(token: str, *, regenerar_anti_replay: bool = False) -> dict[str, str]:
     """
     Monta headers para pap-api/vendas.
 
-    A API exige JWT + hash anti-replay de 36 chars no final da assinatura.
-    Sem esse hash (ou com hash velho), responde 401 jwt malformed.
+    A SPA envia JWT + hash anti-replay (36 chars). Esse hash já funciona nas
+    requests interceptadas. Regenerar com chave/formato errado causa
+    "jwt malformed". Por padrão, preservamos o token completo da SPA.
     """
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -374,27 +375,34 @@ def _headers_auth(token: str) -> dict[str, str]:
     if not token:
         return headers
 
-    t = limpar_jwt(token) or token.strip()
-    if t.lower().startswith("bearer "):
-        t = t[7:].strip()
+    raw = (token or "").strip()
+    has_bearer = raw.lower().startswith("bearer ")
+    t = limpar_jwt(raw) or (raw[7:].strip() if has_bearer else raw)
 
     parts = t.split(".")
     if len(parts) == 3:
         sig = parts[2]
-        # Se já veio com hash acoplado (sig ~79), remove o hash velho e regenera
-        if len(sig) >= 43 + 36:
-            base_jwt = f"{parts[0]}.{parts[1]}.{sig[:-36]}"
-        elif len(sig) > 43:
-            # Hash parcial/desconhecido: tenta preservar só os 43 da assinatura HS256
-            base_jwt = f"{parts[0]}.{parts[1]}.{sig[:43]}"
+        ja_tem_hash = len(sig) >= 43 + 36
+        if regenerar_anti_replay or not ja_tem_hash:
+            if ja_tem_hash:
+                base_jwt = f"{parts[0]}.{parts[1]}.{sig[:-36]}"
+            elif len(sig) > 43:
+                base_jwt = f"{parts[0]}.{parts[1]}.{sig[:43]}"
+            else:
+                base_jwt = t
+            t = base_jwt + _gerar_anti_replay_hash()
+            logger.info(
+                "[HISTORICO PAP] Authorization com anti-replay %s (base=%d final=%d).",
+                "regenerado" if regenerar_anti_replay else "gerado (token puro)",
+                len(base_jwt),
+                len(t),
+            )
         else:
-            base_jwt = t
-        t = base_jwt + _gerar_anti_replay_hash()
-        logger.info(
-            "[HISTORICO PAP] Authorization com anti-replay fresco (base=%d final=%d).",
-            len(base_jwt),
-            len(t),
-        )
+            logger.info(
+                "[HISTORICO PAP] Authorization preservado da SPA (len=%d sig=%d) — sem regenerar hash.",
+                len(t),
+                len(sig),
+            )
 
     headers["Authorization"] = f"Bearer {t}"
     return headers
@@ -480,117 +488,112 @@ def _fetch_json(page, url: str, token: str = "") -> dict:
     """
     Busca JSON da API do PAP.
     Estratégia (em ordem):
-    1) APIRequestContext do Playwright SEM Authorization (só cookies do contexto — a API usa cookie de sessão).
-    2) APIRequestContext do Playwright COM Authorization Bearer (se o token for válido JWT).
-    3) HTTP direto via requests com Bearer.
-    4) Evaluate fetch nativo do browser (com credentials: include).
+    1) Evaluate fetch no browser com Authorization exato da SPA (melhor chance).
+    2) APIRequestContext COM Authorization (token SPA preservado).
+    3) HTTP direto via requests.
+    4) Se falhar e token for puro (sem hash), tenta regenerar anti-replay uma vez.
     """
     tok = (token or "").strip()
     if not tok and page:
         tok = limpar_jwt(_extrair_token(page))
-    headers_bearer = _headers_auth(tok)
-    headers_sem_auth = {
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://pap.niointernet.com.br",
-        "Referer": "https://pap.niointernet.com.br/administrativo/historico",
-    }
 
-    # 1) APIRequestContext SEM Authorization — a API usa cookie de sessão set no login
-    if page:
-        try:
-            api = page.context.request
-            resp = api.get(url, headers=headers_sem_auth, timeout=45000)
-            status = resp.status
-            text = resp.text()
+    def _tentar(headers: dict[str, str], rotulo: str) -> dict | None:
+        # Preferir fetch dentro do Chromium (mesmo contexto TLS/cookies da SPA)
+        if page:
             try:
-                json_body = resp.json()
-            except Exception:
-                try:
-                    json_body = json.loads(text)
-                except Exception:
-                    json_body = None
-            if 200 <= status < 300:
-                logger.info("[HISTORICO PAP] context.request (só cookies) OK: %s", status)
-                return {"ok": True, "status": status, "json": json_body}
-            if status in (401, 403):
-                logger.warning(
-                    "[HISTORICO PAP] context.request (só cookies) %s — preview=%s → tentando com Bearer",
-                    status, (text or "")[:180].replace("\n", " "),
+                auth_val = headers.get("Authorization", "")
+                res = page.evaluate(
+                    """
+                    async ({ url, authVal }) => {
+                        try {
+                            const hdrs = { 'Accept': 'application/json, text/plain, */*' };
+                            if (authVal) hdrs['Authorization'] = authVal;
+                            const r = await fetch(url, { method: 'GET', credentials: 'include', headers: hdrs });
+                            const text = await r.text();
+                            let json = null;
+                            try { json = JSON.parse(text); } catch(e) {}
+                            return { ok: r.ok, status: r.status, json: json, preview: text.slice(0, 280) };
+                        } catch(e) {
+                            return { ok: false, status: 0, error: String((e && e.message) || e) };
+                        }
+                    }
+                    """,
+                    {"url": url, "authVal": auth_val},
                 )
-                # Debug: logar todos os cookies ao falhar
-                _log_cookies_debug(page)
-        except Exception as exc:
-            logger.warning("[HISTORICO PAP] context.request (só cookies) falhou (%s)", exc)
+                if isinstance(res, dict):
+                    if res.get("ok"):
+                        logger.info("[HISTORICO PAP] evaluate fetch (%s) OK: %s", rotulo, res.get("status"))
+                        return res
+                    logger.warning(
+                        "[HISTORICO PAP] evaluate fetch (%s): status=%s preview=%s",
+                        rotulo,
+                        res.get("status"),
+                        (res.get("preview") or "")[:180],
+                    )
+                    if res.get("status") not in (401, 403):
+                        return res
+            except Exception as exc:
+                logger.warning("[HISTORICO PAP] evaluate fetch (%s) falhou (%s)", rotulo, exc)
 
-    # 2) APIRequestContext COM Authorization Bearer
-    if page and tok:
-        logger.info(
-            "[HISTORICO PAP] Tentando context.request com Bearer (primeiros 30 chars): %s...",
-            tok[:30],
-        )
-        try:
-            api = page.context.request
-            resp = api.get(url, headers=headers_bearer, timeout=45000)
-            status = resp.status
-            text = resp.text()
             try:
-                json_body = resp.json()
-            except Exception:
+                api = page.context.request
+                resp = api.get(url, headers=headers, timeout=45000)
+                status = resp.status
+                text = resp.text()
                 try:
-                    json_body = json.loads(text)
+                    json_body = resp.json()
                 except Exception:
-                    json_body = None
-            if 200 <= status < 300:
-                logger.info("[HISTORICO PAP] context.request (Bearer) OK: %s", status)
-                return {"ok": True, "status": status, "json": json_body}
-            if status in (401, 403):
+                    try:
+                        json_body = json.loads(text)
+                    except Exception:
+                        json_body = None
+                if 200 <= status < 300:
+                    logger.info("[HISTORICO PAP] context.request (%s) OK: %s", rotulo, status)
+                    return {"ok": True, "status": status, "json": json_body, "preview": (text or "")[:280]}
                 logger.warning(
-                    "[HISTORICO PAP] context.request (Bearer) %s — preview=%s (tentando fallback HTTP)",
-                    status, (text or "")[:180].replace("\n", " "),
+                    "[HISTORICO PAP] context.request (%s) %s — preview=%s",
+                    rotulo,
+                    status,
+                    (text or "")[:180].replace("\n", " "),
                 )
-        except Exception as exc:
-            logger.warning("[HISTORICO PAP] context.request (Bearer) falhou (%s); tentando fallback HTTP direto", exc)
+                if status not in (401, 403):
+                    return {
+                        "ok": False,
+                        "status": status,
+                        "json": json_body,
+                        "preview": (text or "")[:280],
+                    }
+            except Exception as exc:
+                logger.warning("[HISTORICO PAP] context.request (%s) falhou (%s)", rotulo, exc)
 
-    # 3) Fallback direto HTTP sem browser (evita conflitos de cookies do Chromium)
-    resp_http = _fetch_json_http(url, headers_bearer)
-    if resp_http.get("ok"):
-        return resp_http
-    if resp_http.get("status") in (401, 403):
+        resp_http = _fetch_json_http(url, headers)
+        if resp_http.get("ok"):
+            logger.info("[HISTORICO PAP] HTTP direto (%s) OK", rotulo)
+            return resp_http
         logger.warning(
-            "[HISTORICO PAP] HTTP direto (Bearer) %s — tok_len=%d tok_dots=%d tok_inicio=%s",
-            resp_http.get("status"), len(tok), tok.count(".") if tok else 0, tok[:30],
+            "[HISTORICO PAP] HTTP direto (%s) %s — auth_len=%d preview=%s",
+            rotulo,
+            resp_http.get("status"),
+            len(headers.get("Authorization") or ""),
+            (resp_http.get("preview") or "")[:120],
         )
+        return resp_http
 
-    # 4) Fallback para fetch nativo dentro do browser (com credentials: include)
-    if page:
-        try:
-            auth_val = headers_bearer.get("Authorization", "")
-            res = page.evaluate("""
-            async ({ url, authVal }) => {
-                try {
-                    const hdrs = { 'Accept': 'application/json, text/plain, */*' };
-                    if (authVal) hdrs['Authorization'] = authVal;
-                    const r = await fetch(url, { method: 'GET', credentials: 'include', headers: hdrs });
-                    const text = await r.text();
-                    let json = null;
-                    try { json = JSON.parse(text); } catch(e) {}
-                    return { ok: r.ok, status: r.status, json: json, preview: text.slice(0, 280) };
-                } catch(e) {
-                    return { ok: false, status: 0, error: String((e && e.message) || e) };
-                }
-            }
-            """, {"url": url, "authVal": auth_val})
-            if isinstance(res, dict):
-                logger.warning(
-                    "[HISTORICO PAP] evaluate fetch resultado: status=%s ok=%s preview=%s",
-                    res.get("status"), res.get("ok"), (res.get("preview") or "")[:180],
-                )
-                if res.get("ok"):
-                    return res
-        except Exception as exc:
-            logger.warning("[HISTORICO PAP] evaluate fetch falhou (%s)", exc)
+    # 1) Token da SPA com hash preservado (não regenerar)
+    headers_spa = _headers_auth(tok, regenerar_anti_replay=False)
+    res = _tentar(headers_spa, "spa-exato")
+    if res and res.get("ok"):
+        return res
 
-    return resp_http
+    # 2) Último recurso: regenerar anti-replay (pode falhar se a chave/formato mudou)
+    parts = limpar_jwt(tok).split(".") if tok else []
+    if len(parts) == 3:
+        headers_regen = _headers_auth(tok, regenerar_anti_replay=True)
+        res2 = _tentar(headers_regen, "anti-replay-regen")
+        if res2:
+            return res2
+
+    return res or {"ok": False, "status": 401, "error": "jwt_rejected", "preview": "sem resposta"}
 
 
 def _navegar_ao_historico_spa(page) -> None:
@@ -1352,22 +1355,9 @@ def _executar_busca(busca_id: int, login_pap_id: int, token_manual: str = ""):
         )
 
     try:
-        # 1) Tenta reusar sessão/cookies salvos (0 login extra se ainda válidos)
+        # Apenas 1 tentativa com sessão reutilizada (sem segundo login automático).
+        # jwt malformed NÃO se resolve com re-login e queima tentativas na Nio.
         sucesso, err_msg = _rodar_com_sessao(forcar_login_fresco=False)
-
-        # 2) Se token/sessão rejeitados: 1 login fresco (padrão que funcionou no site-record)
-        if not sucesso and _token_rejeitado(err_msg):
-            remover_token_cache(matricula)
-            try:
-                automacao._fechar_sessao()
-            except Exception:
-                pass
-            logger.warning(
-                "[HISTORICO PAP] Sessão reutilizada rejeitada (%s). "
-                "Reiniciando com storage limpo (1 tentativa)...",
-                err_msg,
-            )
-            sucesso, err_msg = _rodar_com_sessao(forcar_login_fresco=True)
 
         if sucesso:
             return
@@ -1379,10 +1369,11 @@ def _executar_busca(busca_id: int, login_pap_id: int, token_manual: str = ""):
 
         if _token_rejeitado(err_msg):
             remover_token_cache(matricula)
-            registrar_cooldown_login(matricula, 900)
+            # Cooldown longo: protege login Igor; use token manual no Funil se precisar testar.
+            registrar_cooldown_login(matricula, 1800)
             _marcar_erro(
                 (err_msg or "Token rejeitado pela API do PAP.")
-                + " Cooldown anti-bloqueio ativado para evitar novos logins."
+                + " Cooldown anti-bloqueio ativado (sem novo login automático)."
             )
             return
 
