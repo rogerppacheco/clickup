@@ -69,6 +69,25 @@ class HistoricoPapTokenValidationTest(SimpleTestCase):
         h = _headers_auth(f"Bearer {tok}")
         self.assertEqual(h["Authorization"], f"Bearer {tok}")
 
+    def test_headers_auth_nao_corrompe_assinatura_curta(self):
+        """Regressão: cortar 36 chars com sig>43 gerava jwt malformed."""
+        tok = _gerar_jwt_mock(3600)
+        parts = tok.split(".")
+        sig44 = "a" * 44
+        tok44 = f"{parts[0]}.{parts[1]}.{sig44}"
+        h = _headers_auth(tok44)
+        self.assertEqual(h["Authorization"], f"Bearer {tok44}")
+
+    def test_headers_auth_remove_anti_replay_longo(self):
+        tok = _gerar_jwt_mock(3600)
+        parts = tok.split(".")
+        sig = ("b" * 43) + ("Z" * 36)
+        self.assertEqual(len(sig), 79)
+        tok_old = f"{parts[0]}.{parts[1]}.{sig}"
+        h = _headers_auth(tok_old)
+        auth = h["Authorization"].removeprefix("Bearer ").strip()
+        self.assertEqual(len(auth.split(".")[2]), 43)
+
     def test_token_com_payload_nio_uuid(self):
         # Tokens emitidos pelo PAP Nio possuem "uuid" e "origem: bo", não "sub"
         tok = _gerar_jwt_mock(3600, payload_extra={"uuid": "TT713110-1234", "origem": "bo"})

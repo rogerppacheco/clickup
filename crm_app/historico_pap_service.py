@@ -370,17 +370,27 @@ def _headers_auth(token: str) -> dict[str, str]:
     }
     if not token:
         return headers
-        
-    t = token.strip()
-    
-    # Se o token já tiver o hash antigo acoplado (length > 297 aprox), limpamos
+
+    t = limpar_jwt(token) or token.strip()
+    if t.lower().startswith("bearer "):
+        t = t[7:].strip()
+
+    # Remanescente antigo: alguns tokens vinham com hash anti-replay (36 chars)
+    # concatenado na assinatura. Só remove se a assinatura for longa o bastante
+    # para provar esse acoplamento (HS256 puro ~43). Cortar com len(sig)>43
+    # corrompe JWT válidos e a API responde "jwt malformed".
     parts = t.split(".")
     if len(parts) == 3:
         sig = parts[2]
-        if len(sig) > 43:
-            t = t[:-36]
+        if len(sig) >= 43 + 36:
+            t = f"{parts[0]}.{parts[1]}.{sig[:-36]}"
+            logger.info(
+                "[HISTORICO PAP] Removido hash anti-replay antigo da assinatura (sig %d → %d).",
+                len(sig),
+                len(sig) - 36,
+            )
 
-    headers["Authorization"] = t if t.startswith("Bearer") else f"Bearer {t}"
+    headers["Authorization"] = f"Bearer {t}"
     return headers
 
 
@@ -404,7 +414,12 @@ def _fetch_json_http(url: str, headers: dict[str, str]) -> dict:
                 }
         if status in (401, 403):
             logger.warning("[HISTORICO PAP] API HTTP %s — preview=%s", status, (text or "")[:180].replace("\n", " "))
-        return {"ok": 200 <= status < 300, "status": status, "json": json_body}
+        return {
+            "ok": 200 <= status < 300,
+            "status": status,
+            "json": json_body,
+            "preview": (text or "")[:280],
+        }
     except Exception as exc:
         return {"ok": False, "status": 0, "error": f"requests: {exc}"}
 
@@ -1003,36 +1018,70 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
     tipos = list(busca.tipos or [])
     
     # ─── PASSO 1: Extrair token da sessão autenticada ───────────────────────────
-    # O browser já está logado (feito em _executar_busca antes de chamar aqui).
-    # Extraímos o token JWT da sessão para usar nas chamadas de API direta.
-    token = _extrair_token(page)
-    if not token:
-        # Tentar navegar ao histórico para acionar o token na SPA
+    # Preferir o Authorization real das requests da SPA para pap-api.
+    # O cookie `token` (path=/administrativo) NÃO é enviado ao domínio pap-api
+    # (por isso cookies-only retorna "jwt must be provided").
+    token = ""
+    captured: dict[str, str] = {"auth": ""}
+
+    def _on_request(request):
+        try:
+            url = (request.url or "").lower()
+            if "pap-api.niointernet.com.br" not in url:
+                return
+            auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+            if auth and len(auth) > 20:
+                captured["auth"] = auth
+        except Exception:
+            pass
+
+    try:
+        page.on("request", _on_request)
         try:
             page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(3000)
-            token = _extrair_token(page)
+            page.wait_for_timeout(2500)
         except Exception as exc:
-            logger.warning("[HISTORICO PAP] Falha ao navegar ao histórico para extrair token: %s", exc)
-    
+            logger.warning("[HISTORICO PAP] goto histórico para capturar token: %s", exc)
+
+        if captured["auth"]:
+            token = limpar_jwt(captured["auth"])
+            if token:
+                logger.info("[HISTORICO PAP] Token capturado do Authorization da SPA (pap-api).")
+        if not token:
+            token = _extrair_token(page)
+            if token:
+                logger.info("[HISTORICO PAP] Token obtido do cookie/storage (fallback).")
+    finally:
+        try:
+            page.remove_listener("request", _on_request)
+        except Exception:
+            pass
+
     if not token:
         return False, (
             "Não foi possível extrair o token da sessão PAP. "
             "O login foi feito mas o token não está disponível no contexto do browser. "
-            "Verifique se a Ana consegue acessar o Histórico PAP normalmente."
+            "Verifique se o login Diretoria consegue acessar o Histórico PAP normalmente."
         )
-    
+
     ok_jwt, payload_jwt, token_limpo = validar_e_decodificar_jwt(token)
     if not ok_jwt:
         return False, f"Token da sessão PAP inválido ou expirado: {token_limpo}"
-    
+
+    sig_len = len(token_limpo.split(".")[2]) if token_limpo.count(".") == 2 else -1
     logger.info(
-        "[HISTORICO PAP] Token da sessão extraído com sucesso. "
+        "[HISTORICO PAP] Token da sessão extraído com sucesso "
+        "(len=%d sig_len=%d sub/uuid=%s). "
         "Iniciando busca via API direta (sem scraping de UI). "
         "Tipos: %s | Período: %s → %s",
-        tipos or ["VENDA", "INTERESSE", "PRE_VENDA"], data_ini[:10], data_fim[:10]
+        len(token_limpo),
+        sig_len,
+        (payload_jwt or {}).get("uuid") or (payload_jwt or {}).get("sub") or "?",
+        tipos or ["VENDA", "INTERESSE", "PRE_VENDA"],
+        data_ini[:10],
+        data_fim[:10],
     )
-    
+
     # ─── PASSO 2: Para cada tipo, buscar via API direta ─────────────────────────
     for tipo_alvo in (tipos or ["VENDA", "INTERESSE", "PRE_VENDA"]):
         if _job_cancelado(busca_id):
@@ -1075,16 +1124,17 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
             if not resp_p1.get("ok"):
                 status_http = resp_p1.get("status", 0)
                 err_msg = resp_p1.get("error", "")
+                preview = str(resp_p1.get("preview") or resp_p1.get("json") or "")[:180]
                 logger.warning(
-                    "[HISTORICO PAP] API retornou erro para %s (alias=%s): status=%s err=%s",
-                    tipo_alvo, alias, status_http, err_msg
+                    "[HISTORICO PAP] API retornou erro para %s (alias=%s): status=%s err=%s preview=%s",
+                    tipo_alvo, alias, status_http, err_msg, preview.replace("\n", " "),
                 )
                 # 401/403 = token inválido — abortar todos os tipos
                 if status_http in (401, 403):
                     return False, (
-                        f"Sessão/token rejeitado pela API do PAP ao buscar {tipo_alvo}. "
-                        "O token foi extraído do browser mas a API não aceitou. "
-                        "Isso pode indicar que a sessão expirou durante a busca."
+                        f"Sessão/token rejeitado pela API do PAP ao buscar {tipo_alvo} "
+                        f"(HTTP {status_http}: {preview or err_msg or 'sem detalhe'}). "
+                        "O token foi extraído do browser mas a API não aceitou."
                     )
                 continue  # Tentar próximo alias
             
