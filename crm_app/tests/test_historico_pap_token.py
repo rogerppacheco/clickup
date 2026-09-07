@@ -58,35 +58,43 @@ class HistoricoPapTokenValidationTest(SimpleTestCase):
 
     def test_headers_auth(self):
         tok = _gerar_jwt_mock(3600)
-        h = _headers_auth(tok)
-        self.assertEqual(h["Authorization"], f"Bearer {tok}")
+        # Força assinatura HS256 típica (43) para o anti-replay ser anexado
+        parts = tok.split(".")
+        tok43 = f"{parts[0]}.{parts[1]}.{'c' * 43}"
+        h = _headers_auth(tok43)
+        auth = h["Authorization"]
+        self.assertTrue(auth.startswith("Bearer "))
+        raw = auth[len("Bearer "):]
+        self.assertEqual(len(raw), len(tok43) + 36)
+        self.assertTrue(raw.startswith(tok43))
         self.assertNotIn("Origem", h)
         self.assertIn("pap.niointernet.com.br", h["Origin"])
         self.assertIn("administrativo/historico", h["Referer"])
 
     def test_headers_auth_com_bearer(self):
-        tok = _gerar_jwt_mock(3600)
-        h = _headers_auth(f"Bearer {tok}")
-        self.assertEqual(h["Authorization"], f"Bearer {tok}")
+        parts = _gerar_jwt_mock(3600).split(".")
+        tok43 = f"{parts[0]}.{parts[1]}.{'d' * 43}"
+        h = _headers_auth(f"Bearer {tok43}")
+        raw = h["Authorization"][len("Bearer "):]
+        self.assertEqual(len(raw), len(tok43) + 36)
+        self.assertTrue(raw.startswith(tok43))
 
-    def test_headers_auth_nao_corrompe_assinatura_curta(self):
-        """Regressão: cortar 36 chars com sig>43 gerava jwt malformed."""
-        tok = _gerar_jwt_mock(3600)
-        parts = tok.split(".")
-        sig44 = "a" * 44
-        tok44 = f"{parts[0]}.{parts[1]}.{sig44}"
-        h = _headers_auth(tok44)
-        self.assertEqual(h["Authorization"], f"Bearer {tok44}")
+    def test_headers_auth_regenera_anti_replay_de_token_spa(self):
+        """SPA envia JWT+hash (sig=79). Devemos trocar o hash velho por um fresco."""
+        parts = _gerar_jwt_mock(3600).split(".")
+        base = f"{parts[0]}.{parts[1]}.{'e' * 43}"
+        tok_spa = base + ("F" * 36)
+        h = _headers_auth(tok_spa)
+        raw = h["Authorization"][len("Bearer "):]
+        self.assertEqual(len(raw), len(base) + 36)
+        self.assertTrue(raw.startswith(base))
+        self.assertFalse(raw.endswith("F" * 36))
 
-    def test_headers_auth_remove_anti_replay_longo(self):
-        tok = _gerar_jwt_mock(3600)
-        parts = tok.split(".")
-        sig = ("b" * 43) + ("Z" * 36)
-        self.assertEqual(len(sig), 79)
-        tok_old = f"{parts[0]}.{parts[1]}.{sig}"
-        h = _headers_auth(tok_old)
-        auth = h["Authorization"].removeprefix("Bearer ").strip()
-        self.assertEqual(len(auth.split(".")[2]), 43)
+    def test_anti_replay_hash_tem_36_chars(self):
+        from crm_app.historico_pap_service import _gerar_anti_replay_hash
+
+        h = _gerar_anti_replay_hash()
+        self.assertEqual(len(h), 36)
 
     def test_token_com_payload_nio_uuid(self):
         # Tokens emitidos pelo PAP Nio possuem "uuid" e "origem: bo", não "sub"
@@ -161,8 +169,10 @@ class HistoricoPapFetchDirectHttpTest(SimpleTestCase):
         self.assertEqual(resp["status"], 200)
         self.assertEqual(resp["json"]["total"], 1)
 
-        # Verificar headers passados para requests
+        # Verificar headers passados para requests (JWT + anti-replay de 36 chars)
         mock_get.assert_called_once()
         _, kwargs = mock_get.call_args
-        self.assertEqual(kwargs["headers"]["Authorization"], f"Bearer {tok}")
+        auth = kwargs["headers"]["Authorization"]
+        self.assertTrue(auth.startswith("Bearer "))
+        self.assertGreaterEqual(len(auth), len(f"Bearer {tok}") + 36)
         self.assertNotIn("Origem", kwargs["headers"])

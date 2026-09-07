@@ -347,22 +347,25 @@ def _extrair_token(page) -> str:
 
 
 def _gerar_anti_replay_hash() -> str:
-    import base64
-    from datetime import datetime, timezone
-    
-    key = '-5Hsrpt5gb93N5L9ePT2bBC9MI9ThLctvltkuoOqh2Q'
-    dt_str = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    """Hash XOR+Base64 (36 chars) exigido pela API de vendas do PAP no final do JWT."""
+    from datetime import datetime, timezone as dt_tz
+
+    key = "-5Hsrpt5gb93N5L9ePT2bBC9MI9ThLctvltkuoOqh2Q"
+    dt_str = datetime.now(dt_tz.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     plaintext = f'"{dt_str}"'
-    
     encoded = []
     for i, char in enumerate(plaintext):
-        a = ord(char)
-        b = a ^ ord(key[i % len(key)])
-        encoded.append(b)
-    return base64.b64encode(bytes(encoded)).decode('utf-8')
+        encoded.append(ord(char) ^ ord(key[i % len(key)]))
+    return base64.b64encode(bytes(encoded)).decode("utf-8")
 
 
 def _headers_auth(token: str) -> dict[str, str]:
+    """
+    Monta headers para pap-api/vendas.
+
+    A API exige JWT + hash anti-replay de 36 chars no final da assinatura.
+    Sem esse hash (ou com hash velho), responde 401 jwt malformed.
+    """
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Origin": "https://pap.niointernet.com.br",
@@ -375,20 +378,23 @@ def _headers_auth(token: str) -> dict[str, str]:
     if t.lower().startswith("bearer "):
         t = t[7:].strip()
 
-    # Remanescente antigo: alguns tokens vinham com hash anti-replay (36 chars)
-    # concatenado na assinatura. Só remove se a assinatura for longa o bastante
-    # para provar esse acoplamento (HS256 puro ~43). Cortar com len(sig)>43
-    # corrompe JWT válidos e a API responde "jwt malformed".
     parts = t.split(".")
     if len(parts) == 3:
         sig = parts[2]
+        # Se já veio com hash acoplado (sig ~79), remove o hash velho e regenera
         if len(sig) >= 43 + 36:
-            t = f"{parts[0]}.{parts[1]}.{sig[:-36]}"
-            logger.info(
-                "[HISTORICO PAP] Removido hash anti-replay antigo da assinatura (sig %d → %d).",
-                len(sig),
-                len(sig) - 36,
-            )
+            base_jwt = f"{parts[0]}.{parts[1]}.{sig[:-36]}"
+        elif len(sig) > 43:
+            # Hash parcial/desconhecido: tenta preservar só os 43 da assinatura HS256
+            base_jwt = f"{parts[0]}.{parts[1]}.{sig[:43]}"
+        else:
+            base_jwt = t
+        t = base_jwt + _gerar_anti_replay_hash()
+        logger.info(
+            "[HISTORICO PAP] Authorization com anti-replay fresco (base=%d final=%d).",
+            len(base_jwt),
+            len(t),
+        )
 
     headers["Authorization"] = f"Bearer {t}"
     return headers
