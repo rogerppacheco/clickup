@@ -87,20 +87,20 @@ def _testar_variantes(page, token_spa: str, url: str) -> None:
     import requests
 
     limpo = limpar_jwt(token_spa)
-    parts = limpo.split(".")
-    puro = f"{parts[0]}.{parts[1]}.{parts[2][:-36]}" if len(parts) == 3 and len(parts[2]) >= 79 else limpo
+    from crm_app.historico_pap_service import _jwt_base_sem_hash
+
+    puro = _jwt_base_sem_hash(limpo)
 
     variantes = [
-        ("spa-sem-bearer (igual SPA)", _headers_auth(limpo, regenerar_anti_replay=False)),
+        ("hash-fresco-sem-bearer (como SPA)", _headers_auth(puro, regenerar_anti_replay=True)),
+        ("capturado-cru-sem-regen", _headers_auth(limpo, regenerar_anti_replay=False)),
         (
-            "spa-COM-bearer (errado)",
+            "capturado-COM-bearer (errado)",
             {
                 **_headers_auth(limpo, regenerar_anti_replay=False),
                 "Authorization": f"Bearer {limpo}",
             },
         ),
-        ("anti-replay-nosso-sem-bearer", _headers_auth(limpo, regenerar_anti_replay=True)),
-        ("jwt-puro+nosso-hash", _headers_auth(puro, regenerar_anti_replay=True)),
         (
             "jwt-puro-sem-hash",
             {
@@ -114,25 +114,26 @@ def _testar_variantes(page, token_spa: str, url: str) -> None:
 
     print("\n=== COMPARAÇÃO DE HASH ===")
     nosso = _gerar_anti_replay_hash()
+    parts = limpo.split(".")
     spa_hash = parts[2][-36:] if len(parts) == 3 and len(parts[2]) >= 79 else ""
-    print(f"hash SPA (últimos 36): {spa_hash}")
-    print(f"hash nosso gerado agora: {nosso}")
-    print(f"iguais? {spa_hash == nosso}")
-    print("Nota: hashes diferem no timestamp; o da SPA vale por segundos.")
+    print(f"hash SPA capturado: {spa_hash}")
+    print(f"hash fresco agora:   {nosso}")
+    print("A SPA regenera o hash a CADA request (JSON.stringify(new Date)).")
+    print("Reusar hash antigo em /vendas tende a dar jwt malformed.")
 
-    print(f"\n=== TESTES (context.request / requests — SEM fetch da página) ===\n{url}\n")
+    print(f"\n=== TESTES ===\n{url}\n")
     for nome, headers in variantes:
         auth = headers.get("Authorization", "")
-        print(f"\n--- Variante: {nome} | Authorization len={len(auth)} prefix={auth[:20]}... ---")
-
+        print(f"\n--- {nome} | len={len(auth)} prefix={auth[:22]}... ---")
         if page is not None:
             try:
+                if "login.vtal" in (page.url or "").lower():
+                    print("ABORTADO: navegador caiu no login V.tal (sessão expirada).")
+                    return
                 resp = page.context.request.get(url, headers=headers, timeout=45000)
-                text = resp.text()
-                print(f"context.request: status={resp.status} preview={text[:220]}")
+                print(f"context.request: status={resp.status} preview={resp.text()[:220]}")
             except Exception as exc:
                 print(f"context.request erro: {exc}")
-
         try:
             r = requests.get(url, headers=headers, timeout=60)
             print(f"requests:        status={r.status_code} preview={r.text[:220]}")
@@ -248,8 +249,16 @@ def main():
                 browser.close()
                 return
         else:
-            print("\n>>> Indo ao Histórico (sem login automático). Se pedir login, faça manualmente.")
+            print("\n>>> Indo ao Histórico (sem login automático).")
+            print(">>> Se aparecer tela V.tal/QR, a sessão local EXPIROU — use --aguardar-login-manual.")
             page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(1500)
+            if "login.vtal" in (page.url or "").lower() or "nidp" in (page.url or "").lower():
+                print("[ERRO] Sessão local inválida (redirecionou para login V.tal).")
+                print("Rode: python scripts/diagnostico_pap_historico_seguro.py --aguardar-login-manual --dias 30")
+                print("Faça o login/QR UMA vez e deixe o script terminar sem fechar o Chromium.")
+                browser.close()
+                return
             for _ in range(60):
                 if captured["auth"]:
                     break

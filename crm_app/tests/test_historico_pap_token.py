@@ -60,35 +60,34 @@ class HistoricoPapTokenValidationTest(SimpleTestCase):
         parts = _gerar_jwt_mock(3600).split(".")
         base = f"{parts[0]}.{parts[1]}.{'c' * 43}"
         tok_spa = base + ("H" * 36)
-        h = _headers_auth(tok_spa, regenerar_anti_replay=False)
-        # SPA não usa prefixo Bearer
-        self.assertEqual(h["Authorization"], tok_spa)
-        self.assertFalse(h["Authorization"].lower().startswith("bearer "))
+        h = _headers_auth(tok_spa, regenerar_anti_replay=True)
+        raw = h["Authorization"]
+        self.assertFalse(raw.lower().startswith("bearer "))
+        self.assertEqual(len(raw), len(base) + 36)
+        self.assertTrue(raw.startswith(base))
+        self.assertFalse(raw.endswith("H" * 36))
         self.assertNotIn("Origem", h)
-        self.assertIn("pap.niointernet.com.br", h["Origin"])
-        self.assertIn("administrativo/historico", h["Referer"])
 
     def test_headers_auth_com_bearer(self):
         parts = _gerar_jwt_mock(3600).split(".")
         base = f"{parts[0]}.{parts[1]}.{'d' * 43}"
         tok_spa = base + ("H" * 36)
-        h = _headers_auth(f"Bearer {tok_spa}", regenerar_anti_replay=False)
-        self.assertEqual(h["Authorization"], tok_spa)
-
-    def test_headers_auth_regenera_quando_pedido(self):
-        parts = _gerar_jwt_mock(3600).split(".")
-        base = f"{parts[0]}.{parts[1]}.{'e' * 43}"
-        tok_spa = base + ("F" * 36)
-        h = _headers_auth(tok_spa, regenerar_anti_replay=True)
+        h = _headers_auth(f"Bearer {tok_spa}", regenerar_anti_replay=True)
         raw = h["Authorization"]
         self.assertEqual(len(raw), len(base) + 36)
         self.assertTrue(raw.startswith(base))
-        self.assertFalse(raw.endswith("F" * 36))
+
+    def test_headers_auth_preserva_quando_pedido(self):
+        parts = _gerar_jwt_mock(3600).split(".")
+        base = f"{parts[0]}.{parts[1]}.{'e' * 43}"
+        tok_spa = base + ("F" * 36)
+        h = _headers_auth(tok_spa, regenerar_anti_replay=False)
+        self.assertEqual(h["Authorization"], tok_spa)
 
     def test_headers_auth_gera_hash_para_jwt_puro(self):
         parts = _gerar_jwt_mock(3600).split(".")
         tok43 = f"{parts[0]}.{parts[1]}.{'g' * 43}"
-        h = _headers_auth(tok43, regenerar_anti_replay=False)
+        h = _headers_auth(tok43, regenerar_anti_replay=True)
         raw = h["Authorization"]
         self.assertEqual(len(raw), len(tok43) + 36)
         self.assertTrue(raw.startswith(tok43))

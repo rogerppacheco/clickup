@@ -347,24 +347,41 @@ def _extrair_token(page) -> str:
 
 
 def _gerar_anti_replay_hash() -> str:
-    """Hash XOR+Base64 (36 chars) exigido pela API de vendas do PAP no final do JWT."""
+    """Replica _getAuthorizationToken da SPA: encodeObjectBase64Xor(JSON.stringify(new Date))."""
     from datetime import datetime, timezone as dt_tz
 
     key = "-5Hsrpt5gb93N5L9ePT2bBC9MI9ThLctvltkuoOqh2Q"
-    dt_str = datetime.now(dt_tz.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    plaintext = f'"{dt_str}"'
-    encoded = []
+    agora = datetime.now(dt_tz.utc)
+    # Equivalente a Date.toISOString() / JSON.stringify(new Date)
+    iso = agora.strftime("%Y-%m-%dT%H:%M:%S.") + f"{agora.microsecond // 1000:03d}Z"
+    plaintext = json.dumps(iso)  # inclui aspas, como JSON.stringify(new Date)
+    encoded = bytearray()
     for i, char in enumerate(plaintext):
         encoded.append(ord(char) ^ ord(key[i % len(key)]))
-    return base64.b64encode(bytes(encoded)).decode("utf-8")
+    return base64.b64encode(bytes(encoded)).decode("ascii")
 
 
-def _headers_auth(token: str, *, regenerar_anti_replay: bool = False) -> dict[str, str]:
+def _jwt_base_sem_hash(token: str) -> str:
+    """Remove hash anti-replay (36) se presente; devolve JWT puro (~297)."""
+    t = limpar_jwt(token) or (token or "").strip()
+    if t.lower().startswith("bearer "):
+        t = t[7:].strip()
+    parts = t.split(".")
+    if len(parts) != 3:
+        return t
+    sig = parts[2]
+    if len(sig) >= 43 + 36:
+        return f"{parts[0]}.{parts[1]}.{sig[:-36]}"
+    if len(sig) > 43:
+        return f"{parts[0]}.{parts[1]}.{sig[:43]}"
+    return t
+
+
+def _headers_auth(token: str, *, regenerar_anti_replay: bool = True) -> dict[str, str]:
     """
-    Monta headers para pap-api.
-
-    A SPA NÃO usa prefixo "Bearer ". Envia o JWT(+hash) cru no Authorization.
-    Com "Bearer " a API responde jwt malformed.
+    Monta headers como a SPA (_getAuthorizationToken):
+    cookie.token + encodeObjectBase64Xor(JSON.stringify(new Date))
+    SEM prefixo Bearer.
     """
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -374,36 +391,22 @@ def _headers_auth(token: str, *, regenerar_anti_replay: bool = False) -> dict[st
     if not token:
         return headers
 
-    raw = (token or "").strip()
-    has_bearer = raw.lower().startswith("bearer ")
-    t = limpar_jwt(raw) or (raw[7:].strip() if has_bearer else raw)
+    base_jwt = _jwt_base_sem_hash(token)
+    if regenerar_anti_replay:
+        t = base_jwt + _gerar_anti_replay_hash()
+        logger.info(
+            "[HISTORICO PAP] Authorization fresco (jwt=%d + hash36 => %d, sem Bearer).",
+            len(base_jwt),
+            len(t),
+        )
+    else:
+        # Só para diagnóstico: reutiliza token+hash capturado (pode já estar velho)
+        t = limpar_jwt(token) or base_jwt
+        logger.info(
+            "[HISTORICO PAP] Authorization capturado sem regenerar (len=%d).",
+            len(t),
+        )
 
-    parts = t.split(".")
-    if len(parts) == 3:
-        sig = parts[2]
-        ja_tem_hash = len(sig) >= 43 + 36
-        if regenerar_anti_replay or not ja_tem_hash:
-            if ja_tem_hash:
-                base_jwt = f"{parts[0]}.{parts[1]}.{sig[:-36]}"
-            elif len(sig) > 43:
-                base_jwt = f"{parts[0]}.{parts[1]}.{sig[:43]}"
-            else:
-                base_jwt = t
-            t = base_jwt + _gerar_anti_replay_hash()
-            logger.info(
-                "[HISTORICO PAP] Authorization com anti-replay %s (base=%d final=%d).",
-                "regenerado" if regenerar_anti_replay else "gerado (token puro)",
-                len(base_jwt),
-                len(t),
-            )
-        else:
-            logger.info(
-                "[HISTORICO PAP] Authorization preservado da SPA (len=%d sig=%d, sem Bearer).",
-                len(t),
-                len(sig),
-            )
-
-    # Sem "Bearer " — igual à SPA (prefix eyJ..., len ~333)
     headers["Authorization"] = t
     return headers
 
@@ -553,21 +556,19 @@ def _fetch_json(page, url: str, token: str = "") -> dict:
         )
         return resp_http
 
-    headers_spa = _headers_auth(tok, regenerar_anti_replay=False)
-    res = _tentar(headers_spa, "spa-exato")
+    # Sempre regenera hash fresco (como _getAuthorizationToken da SPA)
+    headers_fresh = _headers_auth(tok, regenerar_anti_replay=True)
+    res = _tentar(headers_fresh, "hash-fresco")
     if res.get("ok"):
         return res
 
-    # Só tenta regenerar se o token não tinha hash (cookie puro) ou spa-exato falhou
-    limpo = limpar_jwt(tok)
-    parts = limpo.split(".") if limpo else []
-    if len(parts) == 3:
-        headers_regen = _headers_auth(tok, regenerar_anti_replay=True)
-        res2 = _tentar(headers_regen, "anti-replay-regen")
-        if res2.get("ok") or res2.get("status") not in (None, 0):
-            return res2
+    # Diagnóstico: tenta o token capturado sem regenerar (pode já estar velho)
+    headers_cap = _headers_auth(tok, regenerar_anti_replay=False)
+    res2 = _tentar(headers_cap, "capturado-cru")
+    if res2.get("ok"):
+        return res2
 
-    return res or {"ok": False, "status": 401, "error": "jwt_rejected", "preview": "sem resposta"}
+    return res if res.get("status") else res2
 
 
 def _navegar_ao_historico_spa(page) -> None:
