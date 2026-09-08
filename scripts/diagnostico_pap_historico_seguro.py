@@ -1,21 +1,16 @@
 """Diagnóstico seguro do Histórico PAP — SEM login automático.
 
-Objetivo: abrir o Chromium visível no Cursor, você controla o login manualmente
-(ou cola um Bearer já capturado), e comparamos o Authorization real da SPA
-contra a nossa montagem de headers — sem queimar tentativas na Nio.
+Objetivo: abrir o Chromium visível, você controla o login manualmente,
+e validamos a coleta via REDE DA SPA (resposta de /vendas), sem forjar token.
 
-Uso (recomendado — zero login automático):
-  python scripts/diagnostico_pap_historico_seguro.py --token-manual "Bearer eyJ..."
+Uso:
+  python scripts/diagnostico_pap_historico_seguro.py --aguardar-login-manual --dias 30
 
-  python scripts/diagnostico_pap_historico_seguro.py --aguardar-login-manual
-
-  # Reusa cookies locais se existirem (NÃO faz login):
-  python scripts/diagnostico_pap_historico_seguro.py --usar-sessao-local
+  python scripts/diagnostico_pap_historico_seguro.py --usar-sessao-local --dias 30
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -36,129 +31,28 @@ django.setup()
 
 from playwright.sync_api import sync_playwright
 
-from crm_app.historico_pap import PAP_HISTORICO_URL, STATUS_LISTA_PADRAO, montar_url_vendas
-from crm_app.historico_pap_service import (
-    _fetch_json,
-    _gerar_anti_replay_hash,
-    _headers_auth,
-    limpar_jwt,
-    validar_e_decodificar_jwt,
-)
-
-
-def _url_teste(dias: int = 1) -> str:
-    hoje = date.today()
-    ini = hoje - timedelta(days=max(0, dias - 1))
-    return montar_url_vendas(
-        data_inicio=f"{ini.isoformat()}T00:00:00-03:00",
-        data_fim=f"{hoje.isoformat()}T23:59:59-03:00",
-        pdv="",
-        tipo_api="VENDA",
-        page=1,
-        limit=15,
-        status=STATUS_LISTA_PADRAO,
-    )
-
-
-def _analisar_token(rotulo: str, token: str) -> dict:
-    limpo = limpar_jwt(token)
-    ok, payload, clean_or_msg = validar_e_decodificar_jwt(limpo or token)
-    parts = (limpo or "").split(".")
-    sig = parts[2] if len(parts) == 3 else ""
-    info = {
-        "rotulo": rotulo,
-        "ok_jwt": ok,
-        "len": len(limpo or token or ""),
-        "dots": (limpo or "").count("."),
-        "sig_len": len(sig),
-        "tem_hash_36": len(sig) >= 79,
-        "uuid": (payload or {}).get("uuid") if ok else None,
-        "origem": (payload or {}).get("origem") if ok else None,
-        "inicio": (limpo or token or "")[:40],
-        "fim": (limpo or token or "")[-40:],
-        "msg": None if ok else clean_or_msg,
-    }
-    print(f"\n=== TOKEN [{rotulo}] ===")
-    print(json.dumps(info, ensure_ascii=False, indent=2))
-    return info
-
-
-def _testar_variantes(page, token_spa: str, url: str) -> None:
-    import requests
-
-    limpo = limpar_jwt(token_spa)
-    from crm_app.historico_pap_service import _jwt_base_sem_hash
-
-    puro = _jwt_base_sem_hash(limpo)
-
-    variantes = [
-        ("hash-fresco-sem-bearer (como SPA)", _headers_auth(puro, regenerar_anti_replay=True)),
-        ("capturado-cru-sem-regen", _headers_auth(limpo, regenerar_anti_replay=False)),
-        (
-            "capturado-COM-bearer (errado)",
-            {
-                **_headers_auth(limpo, regenerar_anti_replay=False),
-                "Authorization": f"Bearer {limpo}",
-            },
-        ),
-        (
-            "jwt-puro-sem-hash",
-            {
-                "Accept": "application/json, text/plain, */*",
-                "Origin": "https://pap.niointernet.com.br",
-                "Referer": PAP_HISTORICO_URL,
-                "Authorization": puro,
-            },
-        ),
-    ]
-
-    print("\n=== COMPARAÇÃO DE HASH ===")
-    nosso = _gerar_anti_replay_hash()
-    parts = limpo.split(".")
-    spa_hash = parts[2][-36:] if len(parts) == 3 and len(parts[2]) >= 79 else ""
-    print(f"hash SPA capturado: {spa_hash}")
-    print(f"hash fresco agora:   {nosso}")
-    print("A SPA regenera o hash a CADA request (JSON.stringify(new Date)).")
-    print("Reusar hash antigo em /vendas tende a dar jwt malformed.")
-
-    print(f"\n=== TESTES ===\n{url}\n")
-    for nome, headers in variantes:
-        auth = headers.get("Authorization", "")
-        print(f"\n--- {nome} | len={len(auth)} prefix={auth[:22]}... ---")
-        if page is not None:
-            try:
-                if "login.vtal" in (page.url or "").lower():
-                    print("ABORTADO: navegador caiu no login V.tal (sessão expirada).")
-                    return
-                resp = page.context.request.get(url, headers=headers, timeout=45000)
-                print(f"context.request: status={resp.status} preview={resp.text()[:220]}")
-            except Exception as exc:
-                print(f"context.request erro: {exc}")
-        try:
-            r = requests.get(url, headers=headers, timeout=60)
-            print(f"requests:        status={r.status_code} preview={r.text[:220]}")
-        except Exception as exc:
-            print(f"requests erro: {exc}")
+from crm_app.historico_pap import PAP_HISTORICO_URL, extrair_lista_api
+from crm_app.historico_pap_service import _coletar_vendas_via_rede_spa, limpar_jwt
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Diagnóstico seguro Histórico PAP (sem login automático)")
-    parser.add_argument("--token-manual", default="", help="Cole o Authorization completo (com ou sem Bearer)")
-    parser.add_argument("--aguardar-login-manual", action="store_true", help="Abre browser e espera VOCÊ logar")
-    parser.add_argument("--usar-sessao-local", action="store_true", help="Reusa pap_sessions/*.json sem logar")
-    parser.add_argument("--matricula", default="", help="Só para escolher arquivo de sessão local")
-    parser.add_argument("--dias", type=int, default=1)
+    parser = argparse.ArgumentParser(description="Diagnóstico seguro Histórico PAP (rede SPA)")
+    parser.add_argument("--aguardar-login-manual", action="store_true")
+    parser.add_argument("--usar-sessao-local", action="store_true")
+    parser.add_argument("--matricula", default="")
+    parser.add_argument("--dias", type=int, default=30)
+    parser.add_argument(
+        "--tambem-testar-http",
+        action="store_true",
+        help="Também tenta forjar Authorization (costuma dar jwt malformed)",
+    )
     args = parser.parse_args()
 
-    url = _url_teste(args.dias)
-    print("DIAGNÓSTICO SEGURO — nenhum login automático será disparado pelo script.")
-    print(f"URL de teste: {url}")
-
-    if args.token_manual.strip():
-        tok = args.token_manual.strip()
-        _analisar_token("manual", tok)
-        _testar_variantes(None, tok, url)
-        return
+    hoje = date.today()
+    ini = hoje - timedelta(days=max(0, args.dias - 1))
+    print("DIAGNÓSTICO SEGURO — nenhum login automático.")
+    print(f"Período: {ini} → {hoje}")
+    print("Estratégia principal: capturar JSON de /vendas gerado pela própria SPA.")
 
     sessions_dir = os.path.join(BASE_DIR, "pap_sessions")
     os.makedirs(sessions_dir, exist_ok=True)
@@ -168,7 +62,6 @@ def main():
         if os.path.exists(candidato):
             session_file = candidato
     if not session_file:
-        # pega a mais recente
         files = [
             os.path.join(sessions_dir, f)
             for f in os.listdir(sessions_dir)
@@ -200,13 +93,12 @@ def main():
         page = context.new_page()
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined })")
 
-        captured = {"auth": "", "url": "", "eventos": 0}
+        captured = {"auth": "", "eventos": 0}
 
         def _auth_parece_jwt(auth: str) -> bool:
             a = (auth or "").strip()
             if a.lower().startswith("bearer "):
                 a = a[7:].strip()
-            # Ignora lixo tipo "undefined..."
             return a.startswith("eyJ") and a.count(".") >= 2 and len(a) >= 100
 
         def on_req(req):
@@ -219,44 +111,32 @@ def main():
                     return
                 captured["eventos"] += 1
                 print(f"\n[CAPTURADO] {req.method} {req.url[:120]}")
-                print(f"[CAPTURADO] Authorization len={len(auth)} prefix={auth[:28]}...")
                 if _auth_parece_jwt(auth):
                     captured["auth"] = auth
-                    captured["url"] = req.url
-                    print("[CAPTURADO] JWT válido detectado — seguindo diagnóstico.")
+                    print(f"[CAPTURADO] JWT len={len(auth)}")
             except Exception:
                 pass
 
         page.on("request", on_req)
 
         if args.aguardar_login_manual:
-            print("\n>>> Abra/faça login MANUALMENTE na janela do Chromium.")
-            print(">>> Depois navegue até Histórico de Pedidos (ou aguarde o script).")
-            print(">>> O script NÃO digita matrícula/senha.")
-            print(">>> IMPORTANTE: não feche o Chromium até o script terminar.")
+            print("\n>>> Faça login MANUALMENTE no Chromium (QR/V.tal se pedir).")
+            print(">>> Depois vá ao Histórico ou aguarde o script.")
+            print(">>> NÃO feche o Chromium até o fim.")
             page.goto("https://pap.niointernet.com.br/", wait_until="domcontentloaded", timeout=60000)
-            print("Aguardando até 10 minutos por um JWT (eyJ...) em pap-api...")
-            print("(usando page.wait_for_timeout — time.sleep bloqueava o Playwright)")
             fim = time.time() + 600
             while time.time() < fim and not captured["auth"]:
-                # Precisa bombear o event loop do Playwright; time.sleep NÃO captura rede.
                 page.wait_for_timeout(500)
             if not captured["auth"]:
-                print(
-                    f"[ERRO] Nenhum JWT capturado (eventos pap-api vistos: {captured['eventos']}). "
-                    "Tente de novo ou use --token-manual."
-                )
+                print(f"[ERRO] Sem JWT (eventos={captured['eventos']}).")
                 browser.close()
                 return
         else:
             print("\n>>> Indo ao Histórico (sem login automático).")
-            print(">>> Se aparecer tela V.tal/QR, a sessão local EXPIROU — use --aguardar-login-manual.")
             page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(1500)
             if "login.vtal" in (page.url or "").lower() or "nidp" in (page.url or "").lower():
-                print("[ERRO] Sessão local inválida (redirecionou para login V.tal).")
-                print("Rode: python scripts/diagnostico_pap_historico_seguro.py --aguardar-login-manual --dias 30")
-                print("Faça o login/QR UMA vez e deixe o script terminar sem fechar o Chromium.")
+                print("[ERRO] Sessão local inválida (V.tal). Use --aguardar-login-manual.")
                 browser.close()
                 return
             for _ in range(60):
@@ -264,25 +144,48 @@ def main():
                     break
                 page.wait_for_timeout(500)
 
-        if not captured["auth"]:
-            print("[ERRO] Sem Authorization JWT da SPA. Use --aguardar-login-manual ou --token-manual.")
-            print("Dica: DevTools > Network > request pap-api > Request Headers > Authorization")
-            browser.close()
-            return
+        print("\n=== COLETA VIA REDE DA SPA (/vendas) ===")
+        packs = _coletar_vendas_via_rede_spa(
+            page,
+            data_inicio=ini,
+            data_fim=hoje,
+            timeout_ms=55000,
+            max_paginas_ui=5,
+        )
+        total_itens = 0
+        for i, pack in enumerate(packs, 1):
+            lista, total = extrair_lista_api(pack.get("json"))
+            n = len(lista or [])
+            total_itens += n
+            print(f"  pacote {i}: status={pack.get('status')} itens={n} total_api={total}")
+            print(f"    url={(pack.get('url') or '')[:140]}")
+        print(f"\n[RESULTADO] pacotes={len(packs)} itens_somados={total_itens}")
+        if packs:
+            print("[OK] Abordagem SPA funciona — produção deve usar captura de rede, não HTTP forjado.")
+        else:
+            print("[FALHA] SPA não disparou /vendas com sucesso. Confira se Filtrar abriu e se a tela tem dados.")
 
-        # Garante que estamos no Histórico para disparar /api/portal/vendas
-        try:
-            if "historico" not in (page.url or "").lower():
-                print("\n[INFO] Indo ao Histórico de Pedidos para disparar /vendas...")
-                page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(2500)
-        except Exception as exc:
-            print(f"[AVISO] goto histórico: {exc}")
+        if args.tambem_testar_http and captured["auth"]:
+            from crm_app.historico_pap import STATUS_LISTA_PADRAO, montar_url_vendas
+            from crm_app.historico_pap_service import _headers_auth
 
-        _analisar_token("spa-capturado", captured["auth"])
-        _testar_variantes(page, captured["auth"], url)
+            url = montar_url_vendas(
+                data_inicio=f"{ini.isoformat()}T00:00:00-03:00",
+                data_fim=f"{hoje.isoformat()}T23:59:59-03:00",
+                pdv="",
+                tipo_api="VENDA",
+                page=1,
+                limit=15,
+                status=STATUS_LISTA_PADRAO,
+            )
+            headers = _headers_auth(limpar_jwt(captured["auth"]), regenerar_anti_replay=True)
+            print("\n=== CONTROLE (HTTP forjado — esperado 401) ===")
+            try:
+                resp = page.context.request.get(url, headers=headers, timeout=45000)
+                print(f"context.request: {resp.status} {resp.text()[:180]}")
+            except Exception as exc:
+                print(f"context.request erro: {exc}")
 
-        # Salva sessão para reuso futuro (sem novo login)
         out = os.path.join(sessions_dir, "pap_session_diagnostico.json")
         try:
             context.storage_state(path=out)
@@ -290,9 +193,15 @@ def main():
         except Exception as exc:
             print(f"[AVISO] Não salvou sessão: {exc}")
 
-        print("\nNavegador permanece aberto 60s para inspeção...")
-        page.wait_for_timeout(60000)
-        browser.close()
+        print("\nNavegador aberto 45s (pode fechar se quiser; ignore erro se fechar).")
+        try:
+            page.wait_for_timeout(45000)
+        except Exception as exc:
+            print(f"[INFO] Browser fechado antes do timeout: {exc}")
+        try:
+            browser.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -607,20 +607,76 @@ def _navegar_ao_historico_spa(page) -> None:
         logger.warning("[HISTORICO PAP] goto histórico: %s", exc)
 
 
-def _tentar_clicar_filtrar(page) -> None:
-    """Simula o clique no botão de filtrar/buscar preenchendo os inputs para disparar XHR da SPA."""
+def _force_click(page, btn) -> None:
+    try:
+        btn.click(timeout=2000)
+    except Exception:
+        try:
+            page.evaluate("el => el.click()", btn)
+        except Exception:
+            pass
+
+
+def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim: date | None = None) -> None:
+    """Preenche datas no filtro do Histórico (React) para a SPA disparar /vendas no período certo."""
     if not page:
         return
-        
-    def _force_click(btn):
-        try:
-            btn.click(timeout=2000)
-        except Exception:
-            try:
-                page.evaluate("el => el.click()", btn)
-            except Exception:
-                pass
-                
+    ini = data_inicio or date.today()
+    fim = data_fim or date.today()
+    try:
+        page.evaluate(
+            """([iniIso, fimIso]) => {
+                const [yi, mi, di] = iniIso.split('-');
+                const [yf, mf, df] = fimIso.split('-');
+                const iniBr = `${di}/${mi}/${yi}`;
+                const fimBr = `${df}/${mf}/${yf}`;
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                ).set;
+                const inputs = Array.from(document.querySelectorAll('input'));
+                let preenchidos = 0;
+                inputs.forEach((i, idx) => {
+                    if (i.disabled) return;
+                    const ph = (i.placeholder || '').toLowerCase();
+                    const name = ((i.name || '') + ' ' + (i.id || '') + ' ' + (i.className || '')).toLowerCase();
+                    const isData = i.type === 'date' || ph.includes('data') || name.includes('data')
+                        || name.includes('inicio') || name.includes('fim') || name.includes('date');
+                    if (!isData && i.type !== 'text') return;
+                    let val = null;
+                    if (i.type === 'date') {
+                        val = (preenchidos === 0) ? iniIso : fimIso;
+                    } else {
+                        val = (preenchidos === 0 || ph.includes('in') || name.includes('inicio') || name.includes('start'))
+                            ? iniBr : fimBr;
+                        if (preenchidos === 0 && (ph.includes('fim') || name.includes('fim') || name.includes('end'))) {
+                            val = fimBr;
+                        }
+                    }
+                    if (!val) return;
+                    setter.call(i, val);
+                    i.dispatchEvent(new Event('input', { bubbles: true }));
+                    i.dispatchEvent(new Event('change', { bubbles: true }));
+                    preenchidos += 1;
+                });
+                return preenchidos;
+            }""",
+            [ini.isoformat(), fim.isoformat()],
+        )
+        page.wait_for_timeout(400)
+    except Exception as exc:
+        logger.debug("[HISTORICO PAP] Falha ao preencher datas SPA: %s", exc)
+
+
+def _tentar_clicar_filtrar(
+    page,
+    *,
+    data_inicio: date | None = None,
+    data_fim: date | None = None,
+) -> None:
+    """Clica Filtrar/Buscar na SPA para ela mesma chamar /api/portal/vendas."""
+    if not page:
+        return
+
     seletores_filtro = [
         'button:has-text("Filtrar")',
         'button:has-text("Buscar")',
@@ -633,61 +689,163 @@ def _tentar_clicar_filtrar(page) -> None:
     ]
     seletores_abrir_filtro = [
         'span:has-text("Filtros")',
+        'button:has-text("Filtros")',
         'div:has-text("Filtro")',
     ]
-    
-    # 1. Tentar abrir o modal de filtros primeiro (se existir)
+
     for sel in seletores_abrir_filtro:
         try:
             btn = page.query_selector(sel)
             if btn and btn.is_visible():
                 logger.info("[HISTORICO PAP] Abrindo filtros com '%s'...", sel)
-                _force_click(btn)
-                page.wait_for_timeout(1500)
+                _force_click(page, btn)
+                page.wait_for_timeout(1200)
                 break
         except Exception:
             pass
-            
-    # 2. Forçar preenchimento de inputs para passar na validação do frontend (Bypass React 16+)
-    try:
-        page.evaluate("""() => {
-            const inputs = document.querySelectorAll('input');
-            const now = new Date();
-            const yyyy = now.getFullYear();
-            const mm = String(now.getMonth() + 1).padStart(2, '0');
-            const dd = String(now.getDate()).padStart(2, '0');
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-            
-            inputs.forEach(i => {
-                if (!i.disabled) {
-                    if (i.type === 'date') {
-                        nativeInputValueSetter.call(i, `${yyyy}-${mm}-${dd}`);
-                    } else if (i.type === 'text' || i.className.toLowerCase().includes('data') || i.placeholder.toLowerCase().includes('data')) {
-                        nativeInputValueSetter.call(i, `${dd}/${mm}/${yyyy}`);
-                    }
-                    i.dispatchEvent(new Event('input', { bubbles: true }));
-                    i.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            });
-        }""")
-        logger.info("[HISTORICO PAP] Inputs preenchidos via JS (React Bypass) para disparar validacao.")
-        page.wait_for_timeout(500)
-    except Exception as e:
-        logger.debug("[HISTORICO PAP] Falha ao preencher inputs: %s", e)
 
-    # 3. Clicar no botão de Filtro/Buscar
+    _preencher_datas_filtro_spa(page, data_inicio, data_fim)
+
     for sel in seletores_filtro:
         try:
             btn = page.query_selector(sel)
             if btn and btn.is_visible():
-                logger.info("[HISTORICO PAP] Clicando em '%s' para disparar XHR...", sel)
-                _force_click(btn)
-                page.wait_for_timeout(2000)
+                logger.info("[HISTORICO PAP] Clicando em '%s' para disparar XHR da SPA...", sel)
+                _force_click(page, btn)
+                page.wait_for_timeout(2500)
                 return
         except Exception:
             pass
-            
-    logger.warning("[HISTORICO PAP] Nao encontrou botao de filtrar/buscar na pagina historico.")
+
+    logger.warning("[HISTORICO PAP] Não encontrou botão de filtrar/buscar na página histórico.")
+
+
+def _url_eh_vendas_pap(url: str) -> bool:
+    u = (url or "").lower()
+    return "pap-api.niointernet.com.br" in u and "/api/portal/vendas" in u
+
+
+def _coletar_vendas_via_rede_spa(
+    page,
+    *,
+    data_inicio: date | None = None,
+    data_fim: date | None = None,
+    timeout_ms: int = 50000,
+    max_paginas_ui: int = 8,
+) -> list[dict]:
+    """
+    Captura o JSON de /api/portal/vendas gerado pela própria SPA.
+
+    Forjar Authorization via context.request/requests falha com jwt malformed
+    mesmo com hash fresco; a SPA (interceptor do bundle) consegue autenticar.
+    Aqui só escutamos a rede e disparamos Filtrar — sem remontar o token.
+    """
+    if not page:
+        return []
+
+    collected: list[dict] = []
+    erros: list[str] = []
+
+    def _on_response(response):
+        try:
+            if not _url_eh_vendas_pap(response.url):
+                return
+            method = (response.request.method or "").upper()
+            if method not in ("GET",):
+                return
+            status = response.status
+            preview = ""
+            try:
+                text = response.text()
+                preview = (text or "")[:180]
+            except Exception:
+                text = ""
+            if status < 200 or status >= 300:
+                erros.append(f"HTTP {status}: {preview}")
+                logger.warning(
+                    "[HISTORICO PAP] SPA /vendas %s — preview=%s",
+                    status,
+                    preview.replace("\n", " "),
+                )
+                return
+            try:
+                body = response.json()
+            except Exception:
+                try:
+                    body = json.loads(text) if text else None
+                except Exception:
+                    body = None
+            if body is None:
+                return
+            collected.append({"url": response.url, "status": status, "json": body})
+            logger.info(
+                "[HISTORICO PAP] Capturado /vendas da SPA (status=%s, url=%s)",
+                status,
+                (response.url or "")[:160],
+            )
+        except Exception as exc:
+            logger.debug("[HISTORICO PAP] on_response /vendas: %s", exc)
+
+    page.on("response", _on_response)
+    try:
+        _navegar_ao_historico_spa(page)
+        # A SPA às vezes já dispara /vendas no load; aguarda um pouco.
+        fim = time.time() + min(8.0, timeout_ms / 1000.0)
+        while time.time() < fim and not collected:
+            page.wait_for_timeout(400)
+
+        if not collected:
+            _tentar_clicar_filtrar(page, data_inicio=data_inicio, data_fim=data_fim)
+
+        fim = time.time() + (timeout_ms / 1000.0)
+        while time.time() < fim and not collected:
+            page.wait_for_timeout(400)
+
+        # Paginação na UI (limit padrão da SPA ~15)
+        for _ in range(max(0, max_paginas_ui - 1)):
+            if not collected:
+                break
+            nxt = None
+            for sel in (
+                'button:has-text("Próximo")',
+                'button:has-text("Proximo")',
+                'li.ant-pagination-next:not(.ant-pagination-disabled) button',
+                'button[aria-label="next"]',
+                'button[aria-label="Próxima página"]',
+                ".pagination button:has-text(\">\")",
+            ):
+                try:
+                    cand = page.query_selector(sel)
+                    if cand and cand.is_visible() and cand.is_enabled():
+                        nxt = cand
+                        break
+                except Exception:
+                    continue
+            if not nxt:
+                break
+            antes = len(collected)
+            try:
+                _force_click(page, nxt)
+            except Exception:
+                break
+            page.wait_for_timeout(2000)
+            if len(collected) == antes:
+                # espera um pouco mais por resposta atrasada
+                page.wait_for_timeout(2000)
+            if len(collected) == antes:
+                break
+    finally:
+        try:
+            page.remove_listener("response", _on_response)
+        except Exception:
+            pass
+
+    if not collected and erros:
+        logger.warning(
+            "[HISTORICO PAP] Rede SPA sem sucesso em /vendas. Último erro: %s",
+            erros[-1][:200],
+        )
+    return collected
 
 
 
@@ -974,19 +1132,42 @@ def _salvar_novo(numero: str, tipo: str, pdv: str, payload: dict) -> bool:
 
 
 
+def _classificar_tipo_item(item: dict, tipos_filtro: list[str] | None) -> str | None:
+    """Mapeia um item da API para TIPO_* do modelo, respeitando filtro da busca."""
+    from crm_app.models import HistoricoPapPedido
+    from crm_app.historico_pap import normalizar_tipo
+
+    raw = (
+        item.get("tipoVenda")
+        or item.get("tipo_venda")
+        or item.get("tipo")
+        or ""
+    )
+    tipo = normalizar_tipo(raw) if raw else ""
+    if not tipo:
+        # Histórico padrão costuma ser VENDA quando o filtro da SPA é VENDA
+        tipo = "VENDA"
+    permitidos = tipos_filtro or ["VENDA", "INTERESSE", "PRE_VENDA"]
+    if tipo not in permitidos:
+        return None
+    return getattr(HistoricoPapPedido, f"TIPO_{tipo.replace('-', '_')}", tipo)
+
+
 def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
     """
-    Busca dados do PAP via API direta usando o token da sessão autenticada.
-    
-    O browser (Playwright) é usado APENAS para login seguro — nenhum dado é coletado
-    por scraping de UI. Após extrair o token da sessão, todas as chamadas são
-    feitas diretamente para api/portal/vendas via HTTP.
-    
-    Isso resolve o problema das abas SPA que não respondem ao tipoVenda corretamente.
+    Coleta o relatório do Histórico PAP.
+
+    Estratégia principal: deixar a SPA chamar /api/portal/vendas e capturar
+    a resposta na rede do Playwright (sem forjar Authorization).
+
+    Motivo: context.request/requests com JWT+hash (mesmo fresco) recebem
+    401 jwt malformed; a SPA autenticada consegue.
+
+    Fallback: API HTTP direta (legado) — só se a rede SPA não trouxer nada.
+    Alternativa operacional: upload da exportação PAP (registrar_exportacao).
     """
     from crm_app.models import HistoricoPapBusca, HistoricoPapPedido
     from crm_app.historico_pap import normalizar_pedido, extrair_lista_api, montar_url_vendas, TIPO_API_ALIASES
-    import re
     from django.utils import timezone
 
     encontrados = 0
@@ -995,218 +1176,176 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
     novos_numeros = []
     por_tipo = {}
     vendas_para_processar = []
+    origem_coleta = "spa_rede"
 
     data_ini = _iso_inicio(busca.data_inicio)
     data_fim = _iso_fim(busca.data_fim)
     pdv = busca.pdv
     tipos = list(busca.tipos or [])
-    
-    # ─── PASSO 1: Extrair token da sessão autenticada ───────────────────────────
-    # Preferir o Authorization real das requests da SPA para pap-api.
-    # O cookie `token` (path=/administrativo) NÃO é enviado ao domínio pap-api
-    # (por isso cookies-only retorna "jwt must be provided").
-    token = ""
-    captured: dict[str, str] = {"auth": ""}
 
-    def _on_request(request):
-        try:
-            url = (request.url or "").lower()
-            if "pap-api.niointernet.com.br" not in url:
-                return
-            auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
-            if auth and len(auth) > 20:
-                captured["auth"] = auth
-        except Exception:
-            pass
-
-    try:
-        page.on("request", _on_request)
-        try:
-            page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2500)
-        except Exception as exc:
-            logger.warning("[HISTORICO PAP] goto histórico para capturar token: %s", exc)
-
-        if captured["auth"]:
-            token = limpar_jwt(captured["auth"])
-            if token:
-                logger.info("[HISTORICO PAP] Token capturado do Authorization da SPA (pap-api).")
-        if not token:
-            token = _extrair_token(page)
-            if token:
-                logger.info("[HISTORICO PAP] Token obtido do cookie/storage (fallback).")
-    finally:
-        try:
-            page.remove_listener("request", _on_request)
-        except Exception:
-            pass
-
-    if not token:
-        return False, (
-            "Não foi possível extrair o token da sessão PAP. "
-            "O login foi feito mas o token não está disponível no contexto do browser. "
-            "Verifique se o login Diretoria consegue acessar o Histórico PAP normalmente."
-        )
-
-    ok_jwt, payload_jwt, token_limpo = validar_e_decodificar_jwt(token)
-    if not ok_jwt:
-        return False, f"Token da sessão PAP inválido ou expirado: {token_limpo}"
-
-    sig_len = len(token_limpo.split(".")[2]) if token_limpo.count(".") == 2 else -1
+    # ─── PASSO 1: Capturar /vendas da própria SPA ───────────────────────────────
     logger.info(
-        "[HISTORICO PAP] Token da sessão extraído com sucesso "
-        "(len=%d sig_len=%d sub/uuid=%s). "
-        "Iniciando busca via API direta (sem scraping de UI). "
-        "Tipos: %s | Período: %s → %s",
-        len(token_limpo),
-        sig_len,
-        (payload_jwt or {}).get("uuid") or (payload_jwt or {}).get("sub") or "?",
+        "[HISTORICO PAP] Coleta via rede da SPA (sem forjar token). Tipos=%s período=%s→%s",
         tipos or ["VENDA", "INTERESSE", "PRE_VENDA"],
         data_ini[:10],
         data_fim[:10],
     )
+    respostas_spa = _coletar_vendas_via_rede_spa(
+        page,
+        data_inicio=busca.data_inicio,
+        data_fim=busca.data_fim,
+        timeout_ms=55000,
+        max_paginas_ui=12,
+    )
 
-    # ─── PASSO 2: Para cada tipo, buscar via API direta ─────────────────────────
-    for tipo_alvo in (tipos or ["VENDA", "INTERESSE", "PRE_VENDA"]):
-        if _job_cancelado(busca_id):
-            logger.info("[HISTORICO PAP] Job %s cancelado antes de buscar %s.", busca_id, tipo_alvo)
-            break
-        
-        # INTERESSE usa alias "INTERESSE_SALVO" na API do PAP
-        aliases = TIPO_API_ALIASES.get(tipo_alvo, (tipo_alvo,))
-        
-        # Definir status conforme tipo:
-        # - VENDA: usar lista de status de vendas (ANALISE_BO, PEDIDO_GERADO, etc.)
-        # - INTERESSE/PRE_VENDA: sem filtro de status (a API retorna tudo)
-        if tipo_alvo == "VENDA":
-            status_busca = STATUS_LISTA_PADRAO
-        else:
-            status_busca = None  # Sem filtro de status para INTERESSE e PRE_VENDA
-        
-        itens_tipo = []
-        encontrou_dados = False
-        
-        for alias in aliases:
+    itens_brutos: list[dict] = []
+    spa_ok = False
+    if respostas_spa:
+        spa_ok = True
+        for pack in respostas_spa:
+            lista, total = extrair_lista_api(pack.get("json"))
+            lista = lista or []
+            itens_brutos.extend([x for x in lista if isinstance(x, dict)])
             logger.info(
-                "[HISTORICO PAP] Buscando tipo=%s alias=%s via API direta...",
-                tipo_alvo, alias
+                "[HISTORICO PAP] Pacote SPA /vendas: +%d itens (total API=%s)",
+                len(lista),
+                total,
             )
-            
-            # Buscar primeira página para saber o total
-            url_p1 = montar_url_vendas(
-                data_inicio=data_ini,
-                data_fim=data_fim,
-                pdv=pdv or "",
-                tipo_api=alias,
-                page=1,
-                limit=200,  # Limite alto para reduzir número de páginas
-                status=status_busca,
+
+    # ─── PASSO 2: Fallback API direta (só se a SPA NÃO respondeu /vendas) ───────
+    if not spa_ok:
+        origem_coleta = "api_direta"
+        logger.warning(
+            "[HISTORICO PAP] Rede SPA sem resposta de /vendas — tentando API direta (fallback frágil)."
+        )
+        token = ""
+        captured: dict[str, str] = {"auth": ""}
+
+        def _on_request(request):
+            try:
+                url = (request.url or "").lower()
+                if "pap-api.niointernet.com.br" not in url:
+                    return
+                auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+                if auth and len(auth) > 20 and "eyJ" in auth:
+                    captured["auth"] = auth
+            except Exception:
+                pass
+
+        try:
+            page.on("request", _on_request)
+            try:
+                page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2000)
+            except Exception as exc:
+                logger.warning("[HISTORICO PAP] goto histórico (fallback token): %s", exc)
+            if captured["auth"]:
+                token = limpar_jwt(captured["auth"])
+            if not token:
+                token = _extrair_token(page)
+        finally:
+            try:
+                page.remove_listener("request", _on_request)
+            except Exception:
+                pass
+
+        if not token:
+            return False, (
+                "A SPA não disparou /vendas e não há token para fallback HTTP. "
+                "Alternativa: exporte o Histórico no PAP e envie o arquivo no site "
+                "(registrar exportação)."
             )
-            
-            resp_p1 = _fetch_json(page, url_p1, token=token_limpo)
-            
-            if not resp_p1.get("ok"):
-                status_http = resp_p1.get("status", 0)
-                err_msg = resp_p1.get("error", "")
-                preview = str(resp_p1.get("preview") or resp_p1.get("json") or "")[:180]
-                logger.warning(
-                    "[HISTORICO PAP] API retornou erro para %s (alias=%s): status=%s err=%s preview=%s",
-                    tipo_alvo, alias, status_http, err_msg, preview.replace("\n", " "),
-                )
-                # 401/403 = token inválido — abortar todos os tipos
-                if status_http in (401, 403):
-                    return False, (
-                        f"Sessão/token rejeitado pela API do PAP ao buscar {tipo_alvo} "
-                        f"(HTTP {status_http}: {preview or err_msg or 'sem detalhe'}). "
-                        "O token foi extraído do browser mas a API não aceitou."
-                    )
-                continue  # Tentar próximo alias
-            
-            lista_p1, total = extrair_lista_api(resp_p1.get("json"))
-            lista_p1 = lista_p1 or []
-            total = total or len(lista_p1)
-            
-            logger.info(
-                "[HISTORICO PAP] API direta %s (alias=%s): total=%d, p1=%d itens",
-                tipo_alvo, alias, total, len(lista_p1)
-            )
-            
-            itens_tipo.extend(lista_p1)
-            encontrou_dados = True
-            
-            # Buscar páginas adicionais se necessário
-            paginas_necessarias = max(1, -(-total // 200))  # ceil division
-            for pg in range(2, paginas_necessarias + 1):
-                if _job_cancelado(busca_id):
-                    break
-                    
-                url_pg = montar_url_vendas(
+
+        ok_jwt, payload_jwt, token_limpo = validar_e_decodificar_jwt(token)
+        if not ok_jwt:
+            return False, f"Token da sessão PAP inválido ou expirado: {token_limpo}"
+
+        logger.info(
+            "[HISTORICO PAP] Fallback API direta (uuid=%s).",
+            (payload_jwt or {}).get("uuid") or (payload_jwt or {}).get("sub") or "?",
+        )
+
+        for tipo_alvo in (tipos or ["VENDA", "INTERESSE", "PRE_VENDA"]):
+            if _job_cancelado(busca_id):
+                break
+            aliases = TIPO_API_ALIASES.get(tipo_alvo, (tipo_alvo,))
+            status_busca = STATUS_LISTA_PADRAO if tipo_alvo == "VENDA" else None
+            for alias in aliases:
+                url_p1 = montar_url_vendas(
                     data_inicio=data_ini,
                     data_fim=data_fim,
                     pdv=pdv or "",
                     tipo_api=alias,
-                    page=pg,
+                    page=1,
                     limit=200,
                     status=status_busca,
                 )
-                resp_pg = _fetch_json(page, url_pg, token=token_limpo)
-                if resp_pg.get("ok"):
-                    lista_pg, _ = extrair_lista_api(resp_pg.get("json"))
-                    if lista_pg:
-                        itens_tipo.extend(lista_pg)
-                        logger.info(
-                            "[HISTORICO PAP] Página %d/%d para %s: +%d itens",
-                            pg, paginas_necessarias, tipo_alvo, len(lista_pg)
+                resp_p1 = _fetch_json(page, url_p1, token=token_limpo)
+                if not resp_p1.get("ok"):
+                    status_http = resp_p1.get("status", 0)
+                    preview = str(resp_p1.get("preview") or resp_p1.get("json") or "")[:180]
+                    if status_http in (401, 403):
+                        return False, (
+                            f"Sessão/token rejeitado pela API do PAP ao buscar {tipo_alvo} "
+                            f"(HTTP {status_http}: {preview or 'sem detalhe'}). "
+                            "Forjar Authorization fora da SPA falhou. "
+                            "Use a coleta via rede da SPA (redeploy) ou envie a exportação PAP."
                         )
-                    else:
-                        break  # Sem mais itens
-                else:
-                    logger.warning(
-                        "[HISTORICO PAP] Erro na página %d para %s: %s",
-                        pg, tipo_alvo, resp_pg.get("error", resp_pg.get("status"))
+                    continue
+                lista_p1, total = extrair_lista_api(resp_p1.get("json"))
+                lista_p1 = lista_p1 or []
+                itens_brutos.extend([x for x in lista_p1 if isinstance(x, dict)])
+                paginas = max(1, -(-((total or len(lista_p1)) // 200)))
+                for pg in range(2, paginas + 1):
+                    if _job_cancelado(busca_id):
+                        break
+                    url_pg = montar_url_vendas(
+                        data_inicio=data_ini,
+                        data_fim=data_fim,
+                        pdv=pdv or "",
+                        tipo_api=alias,
+                        page=pg,
+                        limit=200,
+                        status=status_busca,
                     )
-                    break
-                    
-                time.sleep(_intervalo() * 0.5)  # Pausa menor pois é API direta
-            
-            break  # Sucesso com este alias, não precisar tentar o próximo
-        
-        if not encontrou_dados:
-            logger.warning(
-                "[HISTORICO PAP] Nenhum dado obtido para %s (aliases testados: %s). "
-                "Verifique se o período contém registros deste tipo.",
-                tipo_alvo, aliases
-            )
-        
-        # Processar itens do tipo atual
-        itens_dict = [v for v in itens_tipo if isinstance(v, dict)]
-        logger.info(
-            "[HISTORICO PAP] Total de itens válidos para %s: %d",
-            tipo_alvo, len(itens_dict)
+                    resp_pg = _fetch_json(page, url_pg, token=token_limpo)
+                    if not resp_pg.get("ok"):
+                        break
+                    lista_pg, _ = extrair_lista_api(resp_pg.get("json"))
+                    if not lista_pg:
+                        break
+                    itens_brutos.extend([x for x in lista_pg if isinstance(x, dict)])
+                    time.sleep(_intervalo() * 0.5)
+                break
+
+    if not spa_ok and not itens_brutos:
+        return False, (
+            "Nenhum pedido obtido: a SPA não retornou /vendas e o fallback HTTP falhou. "
+            "Alternativa estável: exportar no PAP e enviar o arquivo no site."
         )
-        
-        t_api = getattr(HistoricoPapPedido, f"TIPO_{tipo_alvo.replace('-', '_')}", tipo_alvo)
-        for v in itens_dict:
-            ped = normalizar_pedido(v.get("numeroPedido"))
-            pdv_venda = str(v.get("identificadorPdv") or "").strip()
-            if pdv and pdv_venda != pdv:
-                continue
-            if not ped:
-                continue
-            vendas_para_processar.append((ped, t_api, pdv_venda, v))
-        
-        time.sleep(_intervalo())
+
+    vistos = set()
+    for v in itens_brutos:
+        ped = normalizar_pedido(v.get("numeroPedido"))
+        if not ped or ped in vistos:
+            continue
+        t_api = _classificar_tipo_item(v, tipos or None)
+        if not t_api:
+            continue
+        pdv_venda = str(v.get("identificadorPdv") or "").strip()
+        if pdv and pdv_venda != pdv:
+            continue
+        vistos.add(ped)
+        vendas_para_processar.append((ped, t_api, pdv_venda, v))
 
     # ─── PASSO 3: Gravar no banco ────────────────────────────────────────────────
     def _processar_banco():
         nonlocal encontrados, ignorados, novos, por_tipo, novos_numeros
         for ped, t_api, pdv_venda, v in vendas_para_processar:
             encontrados += 1
-            
             if t_api not in por_tipo:
                 por_tipo[t_api] = {"encontrados": 0, "novos": 0, "ignorados": 0}
             por_tipo[t_api]["encontrados"] += 1
-            
             if _pedido_conhecido(ped):
                 ignorados += 1
                 por_tipo[t_api]["ignorados"] += 1
@@ -1218,11 +1357,19 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
                 else:
                     ignorados += 1
                     por_tipo[t_api]["ignorados"] += 1
-                    
+
     _run_django_sync(_processar_banco)
 
-    status_final = HistoricoPapBusca.STATUS_CANCELADO if _job_cancelado(busca_id) else HistoricoPapBusca.STATUS_CONCLUIDO
-    
+    status_final = (
+        HistoricoPapBusca.STATUS_CANCELADO
+        if _job_cancelado(busca_id)
+        else HistoricoPapBusca.STATUS_CONCLUIDO
+    )
+    msg = (
+        "Busca efetuada via rede da SPA (resposta de /vendas capturada)."
+        if origem_coleta == "spa_rede"
+        else "Busca efetuada via API direta (fallback)."
+    )
     _run_django_sync(
         lambda: _atualizar(
             busca_id,
@@ -1232,9 +1379,9 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
             ignorados=ignorados,
             por_tipo=por_tipo,
             novos_numeros=novos_numeros,
-            mensagem="Busca efetuada via API direta (token de sessão).",
+            mensagem=msg,
             finalizado_em=timezone.now(),
-            relatorio_json={"fase": "concluido", "por_tipo": por_tipo},
+            relatorio_json={"fase": "concluido", "origem": origem_coleta, "por_tipo": por_tipo},
         )
     )
     return True, ""
