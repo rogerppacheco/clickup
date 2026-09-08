@@ -84,27 +84,33 @@ def _analisar_token(rotulo: str, token: str) -> dict:
 
 
 def _testar_variantes(page, token_spa: str, url: str) -> None:
+    import requests
+
     limpo = limpar_jwt(token_spa)
-    variantes = [
-        ("spa-exato-preservado", _headers_auth(limpo, regenerar_anti_replay=False)),
-        ("anti-replay-nosso", _headers_auth(limpo, regenerar_anti_replay=True)),
-    ]
-    # JWT puro (sem hash) + nosso hash
     parts = limpo.split(".")
-    if len(parts) == 3 and len(parts[2]) >= 79:
-        puro = f"{parts[0]}.{parts[1]}.{parts[2][:-36]}"
-        variantes.append(("jwt-puro+nosso-hash", _headers_auth(puro, regenerar_anti_replay=True)))
-        variantes.append(
-            (
-                "jwt-puro-sem-hash",
-                {
-                    "Accept": "application/json, text/plain, */*",
-                    "Origin": "https://pap.niointernet.com.br",
-                    "Referer": PAP_HISTORICO_URL,
-                    "Authorization": f"Bearer {puro}",
-                },
-            )
-        )
+    puro = f"{parts[0]}.{parts[1]}.{parts[2][:-36]}" if len(parts) == 3 and len(parts[2]) >= 79 else limpo
+
+    variantes = [
+        ("spa-sem-bearer (igual SPA)", _headers_auth(limpo, regenerar_anti_replay=False)),
+        (
+            "spa-COM-bearer (errado)",
+            {
+                **_headers_auth(limpo, regenerar_anti_replay=False),
+                "Authorization": f"Bearer {limpo}",
+            },
+        ),
+        ("anti-replay-nosso-sem-bearer", _headers_auth(limpo, regenerar_anti_replay=True)),
+        ("jwt-puro+nosso-hash", _headers_auth(puro, regenerar_anti_replay=True)),
+        (
+            "jwt-puro-sem-hash",
+            {
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://pap.niointernet.com.br",
+                "Referer": PAP_HISTORICO_URL,
+                "Authorization": puro,
+            },
+        ),
+    ]
 
     print("\n=== COMPARAÇÃO DE HASH ===")
     nosso = _gerar_anti_replay_hash()
@@ -112,37 +118,26 @@ def _testar_variantes(page, token_spa: str, url: str) -> None:
     print(f"hash SPA (últimos 36): {spa_hash}")
     print(f"hash nosso gerado agora: {nosso}")
     print(f"iguais? {spa_hash == nosso}")
+    print("Nota: hashes diferem no timestamp; o da SPA vale por segundos.")
 
-    print(f"\n=== TESTES HTTP na URL ===\n{url}\n")
+    print(f"\n=== TESTES (context.request / requests — SEM fetch da página) ===\n{url}\n")
     for nome, headers in variantes:
         auth = headers.get("Authorization", "")
-        print(f"\n--- Variante: {nome} | Authorization len={len(auth)} ---")
-        # Via página (mesmo contexto)
-        if page is not None:
-            res = _fetch_json(page, url, token=limpo if "spa" in nome or "anti-replay" in nome else limpo)
-            # Forçar headers específicos via evaluate
-            try:
-                res2 = page.evaluate(
-                    """
-                    async ({ url, authVal }) => {
-                      const hdrs = { Accept: 'application/json, text/plain, */*' };
-                      if (authVal) hdrs.Authorization = authVal;
-                      const r = await fetch(url, { method: 'GET', credentials: 'include', headers: hdrs });
-                      const text = await r.text();
-                      return { status: r.status, ok: r.ok, preview: text.slice(0, 220) };
-                    }
-                    """,
-                    {"url": url, "authVal": auth},
-                )
-                print(f"evaluate fetch: status={res2.get('status')} ok={res2.get('ok')} preview={res2.get('preview')}")
-            except Exception as exc:
-                print(f"evaluate fetch erro: {exc}")
-                print(f"_fetch_json fallback: {res}")
-        else:
-            import requests
+        print(f"\n--- Variante: {nome} | Authorization len={len(auth)} prefix={auth[:20]}... ---")
 
+        if page is not None:
+            try:
+                resp = page.context.request.get(url, headers=headers, timeout=45000)
+                text = resp.text()
+                print(f"context.request: status={resp.status} preview={text[:220]}")
+            except Exception as exc:
+                print(f"context.request erro: {exc}")
+
+        try:
             r = requests.get(url, headers=headers, timeout=60)
-            print(f"requests: status={r.status_code} preview={r.text[:220]}")
+            print(f"requests:        status={r.status_code} preview={r.text[:220]}")
+        except Exception as exc:
+            print(f"requests erro: {exc}")
 
 
 def main():
@@ -204,7 +199,14 @@ def main():
         page = context.new_page()
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined })")
 
-        captured = {"auth": "", "url": ""}
+        captured = {"auth": "", "url": "", "eventos": 0}
+
+        def _auth_parece_jwt(auth: str) -> bool:
+            a = (auth or "").strip()
+            if a.lower().startswith("bearer "):
+                a = a[7:].strip()
+            # Ignora lixo tipo "undefined..."
+            return a.startswith("eyJ") and a.count(".") >= 2 and len(a) >= 100
 
         def on_req(req):
             try:
@@ -212,11 +214,15 @@ def main():
                 if "pap-api.niointernet.com.br" not in u:
                     return
                 auth = req.headers.get("authorization") or req.headers.get("Authorization") or ""
-                if auth and len(auth) > 20:
+                if not auth or len(auth) <= 20:
+                    return
+                captured["eventos"] += 1
+                print(f"\n[CAPTURADO] {req.method} {req.url[:120]}")
+                print(f"[CAPTURADO] Authorization len={len(auth)} prefix={auth[:28]}...")
+                if _auth_parece_jwt(auth):
                     captured["auth"] = auth
                     captured["url"] = req.url
-                    print(f"\n[CAPTURADO] {req.method} {req.url[:120]}")
-                    print(f"[CAPTURADO] Authorization len={len(auth)} prefix={auth[:24]}...")
+                    print("[CAPTURADO] JWT válido detectado — seguindo diagnóstico.")
             except Exception:
                 pass
 
@@ -226,28 +232,43 @@ def main():
             print("\n>>> Abra/faça login MANUALMENTE na janela do Chromium.")
             print(">>> Depois navegue até Histórico de Pedidos (ou aguarde o script).")
             print(">>> O script NÃO digita matrícula/senha.")
+            print(">>> IMPORTANTE: não feche o Chromium até o script terminar.")
             page.goto("https://pap.niointernet.com.br/", wait_until="domcontentloaded", timeout=60000)
-            print("Aguardando até 10 minutos por um Authorization em pap-api...")
+            print("Aguardando até 10 minutos por um JWT (eyJ...) em pap-api...")
+            print("(usando page.wait_for_timeout — time.sleep bloqueava o Playwright)")
             fim = time.time() + 600
             while time.time() < fim and not captured["auth"]:
-                time.sleep(1)
+                # Precisa bombear o event loop do Playwright; time.sleep NÃO captura rede.
+                page.wait_for_timeout(500)
             if not captured["auth"]:
-                print("[ERRO] Nenhum Authorization capturado. Encerre e tente com --token-manual.")
+                print(
+                    f"[ERRO] Nenhum JWT capturado (eventos pap-api vistos: {captured['eventos']}). "
+                    "Tente de novo ou use --token-manual."
+                )
                 browser.close()
                 return
         else:
             print("\n>>> Indo ao Histórico (sem login automático). Se pedir login, faça manualmente.")
             page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=60000)
-            for _ in range(30):
+            for _ in range(60):
                 if captured["auth"]:
                     break
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(500)
 
         if not captured["auth"]:
-            print("[ERRO] Sem Authorization da SPA. Use --aguardar-login-manual ou --token-manual.")
-            print("Dica: no Chrome DevTools > Network > qualquer request pap-api > Request Headers > Authorization")
+            print("[ERRO] Sem Authorization JWT da SPA. Use --aguardar-login-manual ou --token-manual.")
+            print("Dica: DevTools > Network > request pap-api > Request Headers > Authorization")
             browser.close()
             return
+
+        # Garante que estamos no Histórico para disparar /api/portal/vendas
+        try:
+            if "historico" not in (page.url or "").lower():
+                print("\n[INFO] Indo ao Histórico de Pedidos para disparar /vendas...")
+                page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=45000)
+                page.wait_for_timeout(2500)
+        except Exception as exc:
+            print(f"[AVISO] goto histórico: {exc}")
 
         _analisar_token("spa-capturado", captured["auth"])
         _testar_variantes(page, captured["auth"], url)

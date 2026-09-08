@@ -361,11 +361,10 @@ def _gerar_anti_replay_hash() -> str:
 
 def _headers_auth(token: str, *, regenerar_anti_replay: bool = False) -> dict[str, str]:
     """
-    Monta headers para pap-api/vendas.
+    Monta headers para pap-api.
 
-    A SPA envia JWT + hash anti-replay (36 chars). Esse hash já funciona nas
-    requests interceptadas. Regenerar com chave/formato errado causa
-    "jwt malformed". Por padrão, preservamos o token completo da SPA.
+    A SPA NÃO usa prefixo "Bearer ". Envia o JWT(+hash) cru no Authorization.
+    Com "Bearer " a API responde jwt malformed.
     """
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -399,12 +398,13 @@ def _headers_auth(token: str, *, regenerar_anti_replay: bool = False) -> dict[st
             )
         else:
             logger.info(
-                "[HISTORICO PAP] Authorization preservado da SPA (len=%d sig=%d) — sem regenerar hash.",
+                "[HISTORICO PAP] Authorization preservado da SPA (len=%d sig=%d, sem Bearer).",
                 len(t),
                 len(sig),
             )
 
-    headers["Authorization"] = f"Bearer {t}"
+    # Sem "Bearer " — igual à SPA (prefix eyJ..., len ~333)
+    headers["Authorization"] = t
     return headers
 
 
@@ -487,110 +487,84 @@ def _log_cookies_debug(page, dominio: str = "pap-api.niointernet.com.br") -> Non
 def _fetch_json(page, url: str, token: str = "") -> dict:
     """
     Busca JSON da API do PAP.
-    Estratégia (em ordem):
-    1) Evaluate fetch no browser com Authorization exato da SPA (melhor chance).
-    2) APIRequestContext COM Authorization (token SPA preservado).
-    3) HTTP direto via requests.
-    4) Se falhar e token for puro (sem hash), tenta regenerar anti-replay uma vez.
+
+    NÃO usar page.evaluate(fetch): o bundle.js da SPA intercepta window.fetch
+    e as chamadas manuais falham com "Failed to fetch".
+
+    Estratégia:
+    1) Playwright APIRequestContext (fora do JS da página) com Authorization da SPA
+    2) HTTP requests direto
+    3) Fallback regenerando anti-replay (só se o token vier sem hash)
     """
     tok = (token or "").strip()
     if not tok and page:
         tok = limpar_jwt(_extrair_token(page))
 
-    def _tentar(headers: dict[str, str], rotulo: str) -> dict | None:
-        # Preferir fetch dentro do Chromium (mesmo contexto TLS/cookies da SPA)
+    def _parse_playwright_resp(resp) -> dict:
+        status = resp.status
+        text = resp.text()
+        try:
+            json_body = resp.json()
+        except Exception:
+            try:
+                json_body = json.loads(text)
+            except Exception:
+                json_body = None
+        return {
+            "ok": 200 <= status < 300,
+            "status": status,
+            "json": json_body,
+            "preview": (text or "")[:280],
+        }
+
+    def _tentar(headers: dict[str, str], rotulo: str) -> dict:
+        auth_len = len(headers.get("Authorization") or "")
+        # 1) context.request — bypassa o fetch patchado da SPA
         if page:
             try:
-                auth_val = headers.get("Authorization", "")
-                res = page.evaluate(
-                    """
-                    async ({ url, authVal }) => {
-                        try {
-                            const hdrs = { 'Accept': 'application/json, text/plain, */*' };
-                            if (authVal) hdrs['Authorization'] = authVal;
-                            const r = await fetch(url, { method: 'GET', credentials: 'include', headers: hdrs });
-                            const text = await r.text();
-                            let json = null;
-                            try { json = JSON.parse(text); } catch(e) {}
-                            return { ok: r.ok, status: r.status, json: json, preview: text.slice(0, 280) };
-                        } catch(e) {
-                            return { ok: false, status: 0, error: String((e && e.message) || e) };
-                        }
-                    }
-                    """,
-                    {"url": url, "authVal": auth_val},
-                )
-                if isinstance(res, dict):
-                    if res.get("ok"):
-                        logger.info("[HISTORICO PAP] evaluate fetch (%s) OK: %s", rotulo, res.get("status"))
-                        return res
-                    logger.warning(
-                        "[HISTORICO PAP] evaluate fetch (%s): status=%s preview=%s",
-                        rotulo,
-                        res.get("status"),
-                        (res.get("preview") or "")[:180],
-                    )
-                    if res.get("status") not in (401, 403):
-                        return res
-            except Exception as exc:
-                logger.warning("[HISTORICO PAP] evaluate fetch (%s) falhou (%s)", rotulo, exc)
-
-            try:
-                api = page.context.request
-                resp = api.get(url, headers=headers, timeout=45000)
-                status = resp.status
-                text = resp.text()
-                try:
-                    json_body = resp.json()
-                except Exception:
-                    try:
-                        json_body = json.loads(text)
-                    except Exception:
-                        json_body = None
-                if 200 <= status < 300:
-                    logger.info("[HISTORICO PAP] context.request (%s) OK: %s", rotulo, status)
-                    return {"ok": True, "status": status, "json": json_body, "preview": (text or "")[:280]}
+                resp = page.context.request.get(url, headers=headers, timeout=45000)
+                parsed = _parse_playwright_resp(resp)
+                if parsed["ok"]:
+                    logger.info("[HISTORICO PAP] context.request (%s) OK: %s", rotulo, parsed["status"])
+                    return parsed
                 logger.warning(
-                    "[HISTORICO PAP] context.request (%s) %s — preview=%s",
+                    "[HISTORICO PAP] context.request (%s) %s auth_len=%d — preview=%s",
                     rotulo,
-                    status,
-                    (text or "")[:180].replace("\n", " "),
+                    parsed["status"],
+                    auth_len,
+                    (parsed.get("preview") or "")[:180].replace("\n", " "),
                 )
-                if status not in (401, 403):
-                    return {
-                        "ok": False,
-                        "status": status,
-                        "json": json_body,
-                        "preview": (text or "")[:280],
-                    }
+                if parsed["status"] not in (401, 403):
+                    return parsed
             except Exception as exc:
                 logger.warning("[HISTORICO PAP] context.request (%s) falhou (%s)", rotulo, exc)
 
+        # 2) HTTP direto
         resp_http = _fetch_json_http(url, headers)
         if resp_http.get("ok"):
             logger.info("[HISTORICO PAP] HTTP direto (%s) OK", rotulo)
             return resp_http
         logger.warning(
-            "[HISTORICO PAP] HTTP direto (%s) %s — auth_len=%d preview=%s",
+            "[HISTORICO PAP] HTTP direto (%s) %s auth_len=%d — preview=%s",
             rotulo,
             resp_http.get("status"),
-            len(headers.get("Authorization") or ""),
+            auth_len,
             (resp_http.get("preview") or "")[:120],
         )
         return resp_http
 
-    # 1) Token da SPA com hash preservado (não regenerar)
     headers_spa = _headers_auth(tok, regenerar_anti_replay=False)
     res = _tentar(headers_spa, "spa-exato")
-    if res and res.get("ok"):
+    if res.get("ok"):
         return res
 
-    # 2) Último recurso: regenerar anti-replay (pode falhar se a chave/formato mudou)
-    parts = limpar_jwt(tok).split(".") if tok else []
+    # Só tenta regenerar se o token não tinha hash (cookie puro) ou spa-exato falhou
+    limpo = limpar_jwt(tok)
+    parts = limpo.split(".") if limpo else []
     if len(parts) == 3:
         headers_regen = _headers_auth(tok, regenerar_anti_replay=True)
         res2 = _tentar(headers_regen, "anti-replay-regen")
-        if res2:
+        if res2.get("ok") or res2.get("status") not in (None, 0):
             return res2
 
     return res or {"ok": False, "status": 401, "error": "jwt_rejected", "preview": "sem resposta"}
