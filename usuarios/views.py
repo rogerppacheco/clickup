@@ -810,11 +810,14 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         )
         forcar = str(request.data.get("forcar_relogin", "false")).lower() in ("true", "1", "yes")
         try:
+            # Uma única passagem: sincronizar_da_nio já chama garantir_sessao (sem 2º login).
             if forcar:
                 from usuarios.services_nio_terceiros import garantir_sessao_nio
 
                 garantir_sessao_nio(forcar_relogin=True)
-            sincronizar_da_nio(incluir_cadastro=incluir_cadastro, renovar_sessao=True)
+                sincronizar_da_nio(incluir_cadastro=incluir_cadastro, renovar_sessao=False)
+            else:
+                sincronizar_da_nio(incluir_cadastro=incluir_cadastro, renovar_sessao=True)
             preview = terceiros_para_preview()
             return Response(
                 {

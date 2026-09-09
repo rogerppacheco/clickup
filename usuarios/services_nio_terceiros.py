@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -41,6 +42,89 @@ NIO_LOGIN_HINTS = (
 )
 
 _login_lock = threading.Lock()
+_LOGIN_COOLDOWN_S = 900  # 15 min após falha — evita rajada no IdP V.tal
+_LOGIN_LOCK_STALE_S = 180  # lock abandonado (worker morto)
+
+
+def _login_meta_path() -> Path:
+    return storage_state_path().with_name("nio_gestaodeterceiros_login_meta.json")
+
+
+def _login_lock_path() -> Path:
+    return storage_state_path().with_name("nio_gestaodeterceiros_login.lock")
+
+
+def _ler_login_meta() -> dict[str, Any]:
+    path = _login_meta_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _salvar_login_meta(**kwargs: Any) -> None:
+    path = _login_meta_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _ler_login_meta()
+    data.update(kwargs)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _cooldown_ativo() -> str | None:
+    """Retorna mensagem se ainda estamos em cooldown após falha de login."""
+    meta = _ler_login_meta()
+    falha = float(meta.get("last_failure_at") or 0)
+    if not falha:
+        return None
+    decorrido = time.time() - falha
+    if decorrido >= _LOGIN_COOLDOWN_S:
+        return None
+    resto = int(_LOGIN_COOLDOWN_S - decorrido)
+    erro = meta.get("last_error") or "falha anterior no login V.tal"
+    return (
+        f"Login V.tal em cooldown ({resto}s). Evitando novas tentativas. "
+        f"Último erro: {erro}"
+    )
+
+
+class _FileLoginLock:
+    """Lock entre workers Gunicorn (arquivo). Evita dois logins V.tal em paralelo."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._fh = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            try:
+                idade = time.time() - self.path.stat().st_mtime
+                if idade > _LOGIN_LOCK_STALE_S:
+                    self.path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            self._fh = open(self.path, "x", encoding="utf-8")
+        except FileExistsError as exc:
+            raise SessaoNioExpirada(
+                "Já existe um login NIO/V.tal em andamento. Aguarde e tente de novo."
+            ) from exc
+        self._fh.write(str(os.getpid()))
+        self._fh.flush()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._fh:
+                self._fh.close()
+        finally:
+            try:
+                self.path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
 
 FUNCAO_PARA_PERFIL = (
     ("DIRETOR", "Diretoria"),
@@ -385,15 +469,40 @@ def renovar_sessao_login_diretor() -> Path:
 
 
 def garantir_sessao_nio(forcar_relogin: bool = False) -> None:
-    """Garante cookies válidos; se necessário, login automático com o Diretor."""
+    """Garante cookies válidos; no máximo 1 login V.tal por chamada (com lock+cooldown)."""
     with _login_lock:
         if not forcar_relogin and probe_sessao_valida():
             return
-        renovar_sessao_login_diretor()
-        if not probe_sessao_valida():
-            raise SessaoNioExpirada(
-                "Login do Diretor concluiu, mas a lista de terceiros ainda não autenticou."
-            )
+
+        msg_cd = _cooldown_ativo()
+        if msg_cd and not forcar_relogin:
+            # Sem cookies válidos e em cooldown: não bater no IdP de novo
+            if probe_sessao_valida():
+                return
+            raise SessaoNioExpirada(msg_cd)
+        if msg_cd and forcar_relogin:
+            raise SessaoNioExpirada(msg_cd)
+
+        with _FileLoginLock(_login_lock_path()):
+            if not forcar_relogin and probe_sessao_valida():
+                return
+            try:
+                renovar_sessao_login_diretor()
+                if not probe_sessao_valida():
+                    raise SessaoNioExpirada(
+                        "Login do Diretor concluiu, mas a lista de terceiros ainda não autenticou."
+                    )
+                _salvar_login_meta(
+                    last_success_at=time.time(),
+                    last_failure_at=0,
+                    last_error="",
+                )
+            except Exception as exc:
+                _salvar_login_meta(
+                    last_failure_at=time.time(),
+                    last_error=str(exc)[:500],
+                )
+                raise
 
 
 def digits_only(valor: str | None) -> str:
@@ -567,7 +676,9 @@ def username_candidato(nome: str, matricula: str, usados: set[str]) -> str:
     base = re.sub(r"[^\w.@+-]", "", sem_acentos(first)) or "user"
     candidatos = [base]
     if last:
-        candidatos.append(f"{base}.{re.sub(r'[^\w]', '', sem_acentos(last.split()[0]))}")
+        sobrenome = re.sub(r"[^\w]", "", sem_acentos(last.split()[0]))
+        if sobrenome:
+            candidatos.append(f"{base}.{sobrenome}")
     if matricula:
         candidatos.append(matricula)
     for candidato in candidatos:
@@ -614,17 +725,18 @@ def sincronizar_da_nio(
     pausa_s: float = 0.2,
     renovar_sessao: bool = True,
 ) -> list[dict[str, str]]:
+    # No máximo um ciclo de login por sincronização (sem segundo forçar).
     if renovar_sessao:
         garantir_sessao_nio(forcar_relogin=False)
+    sessao = _session_http()
     try:
-        sessao = _session_http()
         html_lista = fetch_html(url_lista(0), sessao=sessao)
     except SessaoNioExpirada:
-        if not renovar_sessao:
-            raise
-        garantir_sessao_nio(forcar_relogin=True)
-        sessao = _session_http()
-        html_lista = fetch_html(url_lista(0), sessao=sessao)
+        raise SessaoNioExpirada(
+            "Sessão NIO inválida após garantir cookies. "
+            "Não haverá nova tentativa de login nesta requisição (anti-bloqueio). "
+            "Aguarde o cooldown ou tente mais tarde."
+        )
     terceiros = parse_lista_html(html_lista)
     if not terceiros:
         raise NioTerceirosError("Nenhum terceiro encontrado na lista da NIO.")

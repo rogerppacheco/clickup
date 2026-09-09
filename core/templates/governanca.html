@@ -2681,11 +2681,17 @@
         }
     };
 
+    let nioSyncInFlight = false;
     window.sincronizarNioTerceiros = async function() {
+        if (nioSyncInFlight) {
+            alert('Sincronização já em andamento. Aguarde terminar (evita várias tentativas de login).');
+            return;
+        }
+        nioSyncInFlight = true;
         const btn = document.getElementById('btn-nio-sincronizar');
         const statusEl = document.getElementById('nio-terceiros-status');
         if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Sincronizando…'; }
-        if (statusEl) statusEl.textContent = 'Login automático do Diretor se necessário…';
+        if (statusEl) statusEl.textContent = 'Login automático do Diretor se necessário (máx. 1 tentativa)…';
         try {
             const data = await apiFetch('/usuarios/nio-terceiros/sincronizar/', {
                 method: 'POST',
@@ -2697,6 +2703,7 @@
             alert('Falha ao sincronizar NIO: ' + (e.message || e));
             if (statusEl) statusEl.textContent = e.message || String(e);
         } finally {
+            nioSyncInFlight = false;
             if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Atualizar lista da NIO'; }
         }
     };
