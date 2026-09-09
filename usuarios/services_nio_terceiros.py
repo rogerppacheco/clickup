@@ -75,8 +75,20 @@ def _salvar_login_meta(**kwargs: Any) -> None:
 
 def _cooldown_segundos_para_erro(erro: str) -> int:
     texto = (erro or "").lower()
-    # Erros de navegação pós-login: cooldown curto (não foi rejeição do IdP).
-    if "lista de terceiros" in texto or "sem gravar sessão" in texto or "ainda não autentic" in texto:
+    # Erros de navegação/sessão PHP pós-SSO: cooldown curto (não foi rejeição do IdP).
+    if any(
+        trecho in texto
+        for trecho in (
+            "lista de terceiros",
+            "sem gravar sessão",
+            "ainda não autentic",
+            "usuario_deslogado",
+            "deslogada",
+            "escolher_corporativo",
+            "relaystate",
+            "deep-link",
+        )
+    ):
         return _LOGIN_COOLDOWN_NAV_S
     return _LOGIN_COOLDOWN_VTAL_S
 
@@ -264,6 +276,11 @@ def fetch_html(url: str, sessao: requests.Session | None = None) -> str:
     return _garantir_html_autenticado(resposta.text or "", resposta.url or url)
 
 
+def url_portal_inicio() -> str:
+    """Entrada do portal (deixa o SSO montar o RelayState correto)."""
+    return f"{base_url()}/"
+
+
 def url_lista(pagina: int = 0) -> str:
     return (
         f"{base_url()}/empresas.php?pagina=colaboradores&id={empresa_id()}"
@@ -359,17 +376,41 @@ def _preencher_login_vtal(page, matricula: str, senha: str) -> None:
         page.keyboard.press("Enter")
 
 
-def _selecionar_ambiente_nio(page) -> None:
+def _selecionar_ambiente_nio(page) -> bool:
+    """Clica no card NIO na tela escolher_corporativo. Retorna True se clicou."""
     url = (page.url or "").lower()
-    if "escolher_corporativo" not in url and "gestaodeterceiros" not in url:
-        return
-    # Preferir o card/ambiente NIO (não a empresa do diretor).
+    if "escolher_corporativo" not in url:
+        return False
     for seletor in (
         'a:has-text("NIO")',
         'a:has-text("53.420.564")',
         'a[href*="land_corporativo=15000"]',
         'a[href*="land_empresa=370721"]',
-        'a[href*="empresas.php"]',
+    ):
+        try:
+            loc = page.locator(seletor)
+            if loc.count() < 1:
+                continue
+            alvo = loc.first
+            if alvo.is_visible(timeout=3000):
+                alvo.click(timeout=10000)
+                page.wait_for_timeout(2500)
+                logger.info("[NIO terceiros] Clique ambiente NIO (%s) → %s", seletor, page.url)
+                return True
+        except Exception:
+            continue
+    logger.warning("[NIO terceiros] Não achou card NIO em %s", page.url)
+    return False
+
+
+def _abrir_aba_terceiros_colaboradores(page) -> bool:
+    """Mesmo passo local: menu Terceiros / Colaboradores (sem goto profundo)."""
+    for seletor in (
+        'a[href*="pagina=colaboradores"]',
+        'a:has-text("Colaboradores")',
+        'a:has-text("Terceiros")',
+        'li:has-text("Terceiros") a',
+        'li:has-text("Colaboradores") a',
     ):
         try:
             loc = page.locator(seletor)
@@ -377,12 +418,39 @@ def _selecionar_ambiente_nio(page) -> None:
                 continue
             alvo = loc.first
             if alvo.is_visible(timeout=2500):
-                alvo.click(timeout=8000)
-                page.wait_for_timeout(2000)
-                logger.info("[NIO terceiros] Ambiente selecionado via %s → %s", seletor, page.url)
-                return
+                alvo.click(timeout=10000)
+                page.wait_for_timeout(2500)
+                logger.info("[NIO terceiros] Clique menu Terceiros/Colaboradores (%s) → %s", seletor, page.url)
+                return True
         except Exception:
             continue
+    return False
+
+
+def _pagina_deslogada(url: str = "", html: str = "") -> bool:
+    alvo = f"{url} {html}".lower()
+    return "usuario_deslogado" in alvo or "msg=usuario_deslogado" in alvo
+
+
+def _aguardar_pos_login_vtal(page, timeout_ms: int = 45000) -> str:
+    """Espera o SSO terminar sem forçar navegação (preserva RelayState/ACS)."""
+    prazo = time.time() + (timeout_ms / 1000.0)
+    ultima = page.url or ""
+    while time.time() < prazo:
+        try:
+            ultima = page.url or ""
+        except Exception:
+            page.wait_for_timeout(400)
+            continue
+        baixa = ultima.lower()
+        if "login.vtal.com" in baixa or "nidp" in baixa:
+            page.wait_for_timeout(500)
+            continue
+        if "gestaodeterceiros" in baixa or "nashai" in baixa or "escolher_corporativo" in baixa:
+            page.wait_for_timeout(800)
+            return ultima
+        page.wait_for_timeout(400)
+    return ultima
 
 
 def _pagina_pronta_colaboradores(page) -> tuple[bool, str, str]:
@@ -391,11 +459,13 @@ def _pagina_pronta_colaboradores(page) -> tuple[bool, str, str]:
         html = page.content() or ""
     except Exception:
         html = ""
+    if _pagina_deslogada(url, html):
+        return False, url, html
     return _html_tem_lista_colaboradores(html), url, html
 
 
 def renovar_sessao_login_diretor() -> Path:
-    """Playwright: login V.tal com credenciais do Diretor e grava storage_state."""
+    """Playwright: mesmo passo a passo local (SSO → NIO → Terceiros → Colaboradores)."""
     if not HAS_PLAYWRIGHT:
         raise NioTerceirosError("Playwright não está instalado no servidor.")
 
@@ -443,8 +513,11 @@ def renovar_sessao_login_diretor() -> Path:
                 "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
             )
         page = context.new_page()
-        page.set_default_timeout(25000)
-        page.goto(url_home_empresa(), wait_until="domcontentloaded", timeout=60000)
+        page.set_default_timeout(30000)
+
+        # 1) Entrada pelo portal (RelayState do Nashai) — NÃO usar deep-link antes do SSO.
+        logger.info("[NIO terceiros] Passo 1: abrir portal %s", url_portal_inicio())
+        page.goto(url_portal_inicio(), wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(1500)
 
         url_atual = page.url or ""
@@ -454,22 +527,13 @@ def renovar_sessao_login_diretor() -> Path:
         except Exception:
             pass
 
+        # 2) Login V.tal se necessário; esperar redirect natural (sem goto).
         fez_login_vtal = False
         if pagina_login_vtal(html=html, url=url_atual) or "login.vtal.com" in url_atual.lower():
             fez_login_vtal = True
+            logger.info("[NIO terceiros] Passo 2: login V.tal")
             _preencher_login_vtal(page, matricula, senha)
-            page.wait_for_timeout(4000)
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=25000)
-            except Exception:
-                pass
-            # Aguarda sair do IdP (redirect SSO).
-            for _ in range(20):
-                url_atual = (page.url or "").lower()
-                if "login.vtal.com" not in url_atual:
-                    break
-                page.wait_for_timeout(500)
-            url_atual = page.url or ""
+            url_atual = _aguardar_pos_login_vtal(page, timeout_ms=50000)
             try:
                 html = page.content() or ""
             except Exception:
@@ -484,29 +548,47 @@ def renovar_sessao_login_diretor() -> Path:
                     "Falha no login automático do Diretor na V.tal. "
                     "Verifique matrícula/senha PAP do perfil Diretoria."
                 )
-            logger.info("[NIO terceiros] Login V.tal OK → %s", url_atual)
+            logger.info("[NIO terceiros] Passo 2 OK → %s", url_atual)
 
+        if _pagina_deslogada(page.url or "", html):
+            raise SessaoNioExpirada(
+                "Portal Nashai retornou usuario_deslogado logo após o SSO. "
+                "Sessão PHP não foi criada — não forçamos deep-link."
+            )
+
+        # 3) Escolher corporativo NIO (como no browser local).
         if "escolher_corporativo" in (page.url or "").lower():
-            _selecionar_ambiente_nio(page)
+            logger.info("[NIO terceiros] Passo 3: escolher ambiente NIO")
+            if not _selecionar_ambiente_nio(page):
+                raise SessaoNioExpirada(
+                    "Tela escolher_corporativo aberta, mas o card NIO não foi encontrado."
+                )
+            page.wait_for_timeout(1500)
 
-        # Entra no contexto da empresa e abre a lista de colaboradores.
-        page.goto(url_home_empresa(), wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1200)
-        if "escolher_corporativo" in (page.url or "").lower():
-            _selecionar_ambiente_nio(page)
-            page.goto(url_home_empresa(), wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(1200)
-
-        page.goto(url_lista(0), wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(2000)
+        # 4) Abrir aba Terceiros/Colaboradores por clique de menu (fluxo local).
+        logger.info("[NIO terceiros] Passo 4: abrir Terceiros/Colaboradores")
         ok, url_final, html_final = _pagina_pronta_colaboradores(page)
         if not ok:
-            if "escolher_corporativo" in (url_final or "").lower():
-                _selecionar_ambiente_nio(page)
-                page.goto(url_lista(0), wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(2000)
-                ok, url_final, html_final = _pagina_pronta_colaboradores(page)
+            clicou = _abrir_aba_terceiros_colaboradores(page)
+            ok, url_final, html_final = _pagina_pronta_colaboradores(page)
+            if not ok and not clicou:
+                # Fallback único: só se já estamos autenticados na empresa.
+                if "empresas.php" in (page.url or "").lower() and not _pagina_deslogada(page.url or "", html_final):
+                    logger.info("[NIO terceiros] Fallback: goto lista colaboradores")
+                    page.goto(url_lista(0), wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(2500)
+                    ok, url_final, html_final = _pagina_pronta_colaboradores(page)
+                else:
+                    logger.warning(
+                        "[NIO terceiros] Sem menu Terceiros e sem empresas.php estável (url=%s)",
+                        page.url,
+                    )
 
+        if _pagina_deslogada(url_final, html_final):
+            raise SessaoNioExpirada(
+                "Sessão Nashai deslogada ao abrir Terceiros "
+                f"(url={url_final[:180]}). Sem gravar sessão incompleta."
+            )
         if pagina_login_vtal(html=html_final, url=url_final):
             raise SessaoNioExpirada(
                 "Após o login, a sessão ainda está no IdP V.tal. Tente novamente em instantes."
@@ -519,7 +601,7 @@ def renovar_sessao_login_diretor() -> Path:
 
         context.storage_state(path=str(path))
         logger.info(
-            "[NIO terceiros] Sessão salva em %s (login_vtal=%s, url=%s, cookies_ok)",
+            "[NIO terceiros] Sessão salva em %s (login_vtal=%s, url=%s)",
             path,
             fez_login_vtal,
             url_final[:160],
