@@ -6,6 +6,8 @@ from unittest.mock import patch, MagicMock
 
 from django.test import SimpleTestCase, TestCase
 
+from datetime import date
+
 from crm_app.historico_pap_service import (
     validar_e_decodificar_jwt,
     salvar_token_cache,
@@ -15,6 +17,7 @@ from crm_app.historico_pap_service import (
     verificar_cooldown_login,
     limpar_cooldown_login,
     obter_status_sessao_pap,
+    _datas_url_correspondem,
     _fetch_json,
     _headers_auth,
 )
@@ -28,6 +31,22 @@ def _gerar_jwt_mock(exp_em_segundos: float = 3600, payload_extra: dict = None) -
     h_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
     p_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return f"eyJ{h_b64[3:]}.{p_b64}.mock_signature_part"
+
+
+class HistoricoPapDatasUrlTest(SimpleTestCase):
+    def test_periodo_bate(self):
+        url = (
+            "https://pap-api.niointernet.com.br/api/portal/vendas"
+            "?dataInicio=2026-09-01T00:00:00-03:00&dataFim=2026-09-09T23:59:59-03:00"
+        )
+        self.assertTrue(_datas_url_correspondem(url, date(2026, 9, 1), date(2026, 9, 9)))
+
+    def test_periodo_diverge_hoje(self):
+        url = (
+            "https://pap-api.niointernet.com.br/api/portal/vendas"
+            "?dataInicio=2026-09-09T00:00:00-03:00&dataFim=2026-09-09T23:59:59-03:00"
+        )
+        self.assertFalse(_datas_url_correspondem(url, date(2026, 9, 1), date(2026, 9, 9)))
 
 
 class HistoricoPapTokenValidationTest(SimpleTestCase):

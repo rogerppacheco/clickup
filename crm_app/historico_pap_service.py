@@ -617,54 +617,208 @@ def _force_click(page, btn) -> None:
             pass
 
 
+def _datas_url_correspondem(url: str, data_inicio: date | None, data_fim: date | None) -> bool:
+    """True se dataInicio/dataFim da query batem com o período pedido (YYYY-MM-DD)."""
+    if not url or not data_inicio or not data_fim:
+        return True
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    qs = parse_qs(urlparse(url).query)
+    ini_raw = unquote((qs.get("dataInicio") or [""])[0])
+    fim_raw = unquote((qs.get("dataFim") or [""])[0])
+    if not ini_raw or not fim_raw:
+        return False
+    return ini_raw[:10] == data_inicio.isoformat() and fim_raw[:10] == data_fim.isoformat()
+
+
+def _authorization_de_request(request) -> str:
+    try:
+        auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    except Exception:
+        return ""
+    auth = (auth or "").strip()
+    return auth if auth and "eyJ" in auth else ""
+
+
+def _coletar_via_auth_capturado(
+    page,
+    *,
+    authorization: str,
+    data_inicio: date,
+    data_fim: date,
+    tipo_api: str = "VENDA",
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Reconsulta /vendas com o Authorization EXATO da SPA (JWT + hash anti-replay).
+
+    Não regenera o hash: forjar Authorization novo causa 401 jwt malformed.
+    """
+    auth = (authorization or "").strip()
+    if auth.lower().startswith("bearer "):
+        auth = auth[7:].strip()
+    if not auth or not page:
+        return []
+
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://pap.niointernet.com.br",
+        "Referer": "https://pap.niointernet.com.br/administrativo/historico",
+        "Authorization": auth,
+    }
+    data_ini = _iso_inicio(data_inicio)
+    data_fim_s = _iso_fim(data_fim)
+    packs: list[dict] = []
+    total = None
+    for page_n in range(1, 51):
+        url = montar_url_vendas(
+            data_inicio=data_ini,
+            data_fim=data_fim_s,
+            pdv="",
+            tipo_api=tipo_api,
+            page=page_n,
+            limit=limit,
+            status=STATUS_LISTA_PADRAO if tipo_api == "VENDA" else None,
+        )
+        try:
+            resp = page.context.request.get(url, headers=headers, timeout=45000)
+            status = resp.status
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+            if status < 200 or status >= 300 or body is None:
+                preview = ""
+                try:
+                    preview = (resp.text() or "")[:160]
+                except Exception:
+                    pass
+                logger.warning(
+                    "[HISTORICO PAP] Reconsulta período via auth SPA falhou page=%s HTTP %s — %s",
+                    page_n,
+                    status,
+                    preview.replace("\n", " "),
+                )
+                break
+            packs.append({"url": url, "status": status, "json": body})
+            lista, total_api = extrair_lista_api(body)
+            if total is None:
+                total = total_api
+            n = len(lista or [])
+            logger.info(
+                "[HISTORICO PAP] Reconsulta auth SPA page=%s: +%d itens (total=%s) período=%s→%s",
+                page_n,
+                n,
+                total,
+                data_inicio,
+                data_fim,
+            )
+            if not lista:
+                break
+            if total is not None and page_n * limit >= int(total):
+                break
+            if n < limit:
+                break
+            time.sleep(0.35)
+        except Exception as exc:
+            logger.warning("[HISTORICO PAP] Reconsulta auth SPA erro: %s", exc)
+            break
+    return packs
+
+
 def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim: date | None = None) -> None:
     """Preenche datas no filtro do Histórico (React) para a SPA disparar /vendas no período certo."""
     if not page:
         return
     ini = data_inicio or date.today()
     fim = data_fim or date.today()
+    ini_br = ini.strftime("%d/%m/%Y")
+    fim_br = fim.strftime("%d/%m/%Y")
     try:
-        page.evaluate(
-            """([iniIso, fimIso]) => {
-                const [yi, mi, di] = iniIso.split('-');
-                const [yf, mf, df] = fimIso.split('-');
-                const iniBr = `${di}/${mi}/${yi}`;
-                const fimBr = `${df}/${mf}/${yf}`;
+        preenchidos = page.evaluate(
+            """([iniIso, fimIso, iniBr, fimBr]) => {
                 const setter = Object.getOwnPropertyDescriptor(
                     window.HTMLInputElement.prototype, 'value'
                 ).set;
-                const inputs = Array.from(document.querySelectorAll('input'));
-                let preenchidos = 0;
-                inputs.forEach((i, idx) => {
-                    if (i.disabled) return;
+                const inputs = Array.from(document.querySelectorAll(
+                    'input[type="date"], .ant-picker-input input, input'
+                ));
+                let count = 0;
+                const vals = [];
+                inputs.forEach((i) => {
+                    if (i.disabled || !i.offsetParent) return;
                     const ph = (i.placeholder || '').toLowerCase();
                     const name = ((i.name || '') + ' ' + (i.id || '') + ' ' + (i.className || '')).toLowerCase();
                     const isData = i.type === 'date' || ph.includes('data') || name.includes('data')
-                        || name.includes('inicio') || name.includes('fim') || name.includes('date');
-                    if (!isData && i.type !== 'text') return;
+                        || name.includes('inicio') || name.includes('fim') || name.includes('date')
+                        || name.includes('picker') || (i.closest && i.closest('.ant-picker'));
+                    if (!isData) return;
                     let val = null;
                     if (i.type === 'date') {
-                        val = (preenchidos === 0) ? iniIso : fimIso;
+                        val = (count === 0) ? iniIso : fimIso;
                     } else {
-                        val = (preenchidos === 0 || ph.includes('in') || name.includes('inicio') || name.includes('start'))
-                            ? iniBr : fimBr;
-                        if (preenchidos === 0 && (ph.includes('fim') || name.includes('fim') || name.includes('end'))) {
+                        val = iniBr;
+                        if (count > 0 || ph.includes('fim') || name.includes('fim') || name.includes('end')) {
+                            val = fimBr;
+                        }
+                        if (count === 0 && (ph.includes('fim') || name.includes('fim') || name.includes('end'))) {
+                            val = fimBr;
+                        } else if (count === 0) {
+                            val = iniBr;
+                        } else {
                             val = fimBr;
                         }
                     }
                     if (!val) return;
+                    const tracker = i._valueTracker;
+                    if (tracker) tracker.setValue('');
                     setter.call(i, val);
                     i.dispatchEvent(new Event('input', { bubbles: true }));
                     i.dispatchEvent(new Event('change', { bubbles: true }));
-                    preenchidos += 1;
+                    i.dispatchEvent(new Event('blur', { bubbles: true }));
+                    vals.push(val);
+                    count += 1;
                 });
-                return preenchidos;
+                return { count, vals };
             }""",
-            [ini.isoformat(), fim.isoformat()],
+            [ini.isoformat(), fim.isoformat(), ini_br, fim_br],
+        )
+        logger.info(
+            "[HISTORICO PAP] Datas filtro SPA pedidas %s→%s; inputs tocados=%s",
+            ini,
+            fim,
+            preenchidos,
         )
         page.wait_for_timeout(400)
     except Exception as exc:
-        logger.debug("[HISTORICO PAP] Falha ao preencher datas SPA: %s", exc)
+        logger.debug("[HISTORICO PAP] Falha ao preencher datas SPA (JS): %s", exc)
+
+    # Reforço via digitação Playwright (Ant Design / React controlado)
+    try:
+        loc = page.locator(
+            '.ant-picker-input input, input[placeholder*="Data" i], input[placeholder*="data"], input[type="date"]'
+        )
+        n = loc.count()
+        for idx in range(min(n, 4)):
+            item = loc.nth(idx)
+            try:
+                if not item.is_visible():
+                    continue
+                tipo = (item.get_attribute("type") or "").lower()
+                val = ini.isoformat() if tipo == "date" else (ini_br if idx % 2 == 0 else fim_br)
+                if tipo != "date" and idx % 2 == 1:
+                    val = fim_br
+                elif tipo == "date" and idx % 2 == 1:
+                    val = fim.isoformat()
+                item.click(timeout=1500)
+                item.fill("")
+                item.type(val, delay=20)
+                item.press("Tab")
+            except Exception:
+                continue
+        page.wait_for_timeout(300)
+    except Exception as exc:
+        logger.debug("[HISTORICO PAP] Falha ao digitar datas SPA: %s", exc)
 
 
 def _tentar_clicar_filtrar(
@@ -736,15 +890,31 @@ def _coletar_vendas_via_rede_spa(
     """
     Captura o JSON de /api/portal/vendas gerado pela própria SPA.
 
-    Forjar Authorization via context.request/requests falha com jwt malformed
-    mesmo com hash fresco; a SPA (interceptor do bundle) consegue autenticar.
-    Aqui só escutamos a rede e disparamos Filtrar — sem remontar o token.
+    A SPA no load usa período "hoje". Sempre aplicamos Filtrar com as datas
+    pedidas; se a URL capturada ainda divergir, reconsultamos a API com o
+    Authorization EXATO interceptado (sem regenerar hash anti-replay).
     """
     if not page:
         return []
 
     collected: list[dict] = []
     erros: list[str] = []
+    captured_auth = {"value": ""}
+
+    def _matched() -> list[dict]:
+        if not data_inicio or not data_fim:
+            return list(collected)
+        return [p for p in collected if _datas_url_correspondem(p.get("url") or "", data_inicio, data_fim)]
+
+    def _on_request(request):
+        try:
+            if not _url_eh_vendas_pap(request.url):
+                return
+            auth = _authorization_de_request(request)
+            if auth:
+                captured_auth["value"] = auth
+        except Exception:
+            pass
 
     def _on_response(response):
         try:
@@ -781,71 +951,102 @@ def _coletar_vendas_via_rede_spa(
             logger.info(
                 "[HISTORICO PAP] Capturado /vendas da SPA (status=%s, url=%s)",
                 status,
-                (response.url or "")[:160],
+                (response.url or "")[:220],
             )
         except Exception as exc:
             logger.debug("[HISTORICO PAP] on_response /vendas: %s", exc)
 
+    page.on("request", _on_request)
     page.on("response", _on_response)
     try:
         _navegar_ao_historico_spa(page)
-        # A SPA às vezes já dispara /vendas no load; aguarda um pouco.
-        fim = time.time() + min(8.0, timeout_ms / 1000.0)
-        while time.time() < fim and not collected:
-            page.wait_for_timeout(400)
+        page.wait_for_timeout(1200)
 
-        if not collected:
-            _tentar_clicar_filtrar(page, data_inicio=data_inicio, data_fim=data_fim)
+        # Sempre filtrar com o período pedido (auto-load da SPA costuma ser só "hoje")
+        _tentar_clicar_filtrar(page, data_inicio=data_inicio, data_fim=data_fim)
 
         fim = time.time() + (timeout_ms / 1000.0)
-        while time.time() < fim and not collected:
+        while time.time() < fim and not _matched() and not collected:
             page.wait_for_timeout(400)
+        # Se já há resposta mas período errado, espera um pouco por uma segunda XHR
+        if collected and not _matched():
+            espera_extra = time.time() + min(8.0, timeout_ms / 1000.0)
+            while time.time() < espera_extra and not _matched():
+                page.wait_for_timeout(400)
 
-        # Paginação na UI (limit padrão da SPA ~15)
-        for _ in range(max(0, max_paginas_ui - 1)):
-            if not collected:
-                break
-            nxt = None
-            for sel in (
-                'button:has-text("Próximo")',
-                'button:has-text("Proximo")',
-                'li.ant-pagination-next:not(.ant-pagination-disabled) button',
-                'button[aria-label="next"]',
-                'button[aria-label="Próxima página"]',
-                ".pagination button:has-text(\">\")",
-            ):
+        matched = _matched()
+        if matched:
+            # Paginação na UI só para o período correto
+            for _ in range(max(0, max_paginas_ui - 1)):
+                nxt = None
+                for sel in (
+                    'button:has-text("Próximo")',
+                    'button:has-text("Proximo")',
+                    'li.ant-pagination-next:not(.ant-pagination-disabled) button',
+                    'button[aria-label="next"]',
+                    'button[aria-label="Próxima página"]',
+                    ".pagination button:has-text(\">\")",
+                ):
+                    try:
+                        cand = page.query_selector(sel)
+                        if cand and cand.is_visible() and cand.is_enabled():
+                            nxt = cand
+                            break
+                    except Exception:
+                        continue
+                if not nxt:
+                    break
+                antes = len(_matched())
                 try:
-                    cand = page.query_selector(sel)
-                    if cand and cand.is_visible() and cand.is_enabled():
-                        nxt = cand
-                        break
+                    _force_click(page, nxt)
                 except Exception:
-                    continue
-            if not nxt:
-                break
-            antes = len(collected)
-            try:
-                _force_click(page, nxt)
-            except Exception:
-                break
-            page.wait_for_timeout(2000)
-            if len(collected) == antes:
-                # espera um pouco mais por resposta atrasada
+                    break
                 page.wait_for_timeout(2000)
-            if len(collected) == antes:
-                break
+                if len(_matched()) == antes:
+                    page.wait_for_timeout(2000)
+                if len(_matched()) == antes:
+                    break
+            return _matched()
+
+        # SPA ignorou as datas → reconsultar com Authorization capturado
+        if captured_auth["value"] and data_inicio and data_fim:
+            logger.warning(
+                "[HISTORICO PAP] SPA filtrou período diferente do pedido (%s→%s). "
+                "Reconsultando /vendas com Authorization capturado da SPA.",
+                data_inicio,
+                data_fim,
+            )
+            packs = _coletar_via_auth_capturado(
+                page,
+                authorization=captured_auth["value"],
+                data_inicio=data_inicio,
+                data_fim=data_fim,
+                tipo_api="VENDA",
+            )
+            if packs:
+                return packs
+
+        if not collected and erros:
+            logger.warning(
+                "[HISTORICO PAP] Rede SPA sem sucesso em /vendas. Último erro: %s",
+                erros[-1][:200],
+            )
+        if collected and data_inicio and data_fim:
+            logger.warning(
+                "[HISTORICO PAP] Mantendo pacotes SPA mesmo com período divergente "
+                "(auth reconsulta indisponível). URLs=%s",
+                [(p.get("url") or "")[:120] for p in collected[:3]],
+            )
+        return collected
     finally:
+        try:
+            page.remove_listener("request", _on_request)
+        except Exception:
+            pass
         try:
             page.remove_listener("response", _on_response)
         except Exception:
             pass
-
-    if not collected and erros:
-        logger.warning(
-            "[HISTORICO PAP] Rede SPA sem sucesso em /vendas. Último erro: %s",
-            erros[-1][:200],
-        )
-    return collected
 
 
 
