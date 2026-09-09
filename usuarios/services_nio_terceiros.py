@@ -42,7 +42,8 @@ NIO_LOGIN_HINTS = (
 )
 
 _login_lock = threading.Lock()
-_LOGIN_COOLDOWN_S = 900  # 15 min após falha — evita rajada no IdP V.tal
+_LOGIN_COOLDOWN_VTAL_S = 900  # falha real no IdP / senha / FAST PASS
+_LOGIN_COOLDOWN_NAV_S = 120  # login ok, mas página NIO não abriu (não martelar IdP)
 _LOGIN_LOCK_STALE_S = 180  # lock abandonado (worker morto)
 
 
@@ -72,16 +73,25 @@ def _salvar_login_meta(**kwargs: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _cooldown_segundos_para_erro(erro: str) -> int:
+    texto = (erro or "").lower()
+    # Erros de navegação pós-login: cooldown curto (não foi rejeição do IdP).
+    if "lista de terceiros" in texto or "sem gravar sessão" in texto or "ainda não autentic" in texto:
+        return _LOGIN_COOLDOWN_NAV_S
+    return _LOGIN_COOLDOWN_VTAL_S
+
+
 def _cooldown_ativo() -> str | None:
     """Retorna mensagem se ainda estamos em cooldown após falha de login."""
     meta = _ler_login_meta()
     falha = float(meta.get("last_failure_at") or 0)
     if not falha:
         return None
+    cooldown = int(meta.get("cooldown_s") or _LOGIN_COOLDOWN_VTAL_S)
     decorrido = time.time() - falha
-    if decorrido >= _LOGIN_COOLDOWN_S:
+    if decorrido >= cooldown:
         return None
-    resto = int(_LOGIN_COOLDOWN_S - decorrido)
+    resto = int(cooldown - decorrido)
     erro = meta.get("last_error") or "falha anterior no login V.tal"
     return (
         f"Login V.tal em cooldown ({resto}s). Evitando novas tentativas. "
@@ -206,12 +216,17 @@ def _cookies_do_storage_state(path: Path) -> dict[str, str]:
         raise SessaoNioExpirada(f"Arquivo de sessão NIO inválido: {exc}") from exc
     cookies: dict[str, str] = {}
     for item in data.get("cookies") or []:
-        dominio = (item.get("domain") or "").lower()
+        dominio = (item.get("domain") or "").lower().lstrip(".")
         nome = item.get("name") or ""
         valor = item.get("value")
         if not nome or valor is None:
             continue
-        if "nashai" in dominio or "gestaodeterceiros" in dominio or dominio in ("", ".nashai.ai"):
+        # Aceita qualquer cookie do portal Nashai/Gestão de Terceiros.
+        if (
+            "nashai" in dominio
+            or "gestaodeterceiros" in dominio
+            or dominio in ("", "nashai.ai")
+        ):
             cookies[nome] = str(valor)
     if not cookies:
         raise SessaoNioExpirada("A sessão salva não tem cookies da Gestão de Terceiros NIO.")
@@ -230,12 +245,16 @@ def _session_http() -> requests.Session:
     sessao = requests.Session()
     sessao.headers.update(
         {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) site-clickup-nio-terceiros",
-            "Accept": "text/html,application/xhtml+xml",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
     )
     for nome, valor in _cookies_do_storage_state(storage_state_path()).items():
-        sessao.cookies.set(nome, valor, domain="gestaodeterceiros.nashai.ai")
+        # Sem forçar domain estrito: requests envia para o host do GET.
+        sessao.cookies.set(nome, valor)
     return sessao
 
 
@@ -266,16 +285,27 @@ def url_home_empresa() -> str:
     )
 
 
+def _html_tem_lista_colaboradores(html: str) -> bool:
+    return bool(re.search(r"colaborador=\d+", html or "", re.I) or "Colaboradores" in (html or ""))
+
+
 def probe_sessao_valida() -> bool:
     """True se os cookies atuais abrem a lista de colaboradores sem cair no IdP."""
     try:
         html = fetch_html(url_lista(0))
-    except SessaoNioExpirada:
+    except SessaoNioExpirada as exc:
+        logger.info("[NIO terceiros] Probe: sessão inválida (%s)", exc)
         return False
     except Exception as exc:
         logger.warning("[NIO terceiros] Probe de sessão falhou: %s", exc)
         return False
-    return bool(re.search(r"colaborador=\d+", html, re.I) or "Colaboradores" in html)
+    ok = _html_tem_lista_colaboradores(html)
+    if not ok:
+        logger.info(
+            "[NIO terceiros] Probe: HTML autenticado mas sem lista de colaboradores (len=%s)",
+            len(html or ""),
+        )
+    return ok
 
 
 def _pagina_vtal_travada(html: str, url: str) -> bool:
@@ -331,20 +361,37 @@ def _preencher_login_vtal(page, matricula: str, senha: str) -> None:
 
 def _selecionar_ambiente_nio(page) -> None:
     url = (page.url or "").lower()
-    if "escolher_corporativo" in url or "gestaodeterceiros" in url:
-        for seletor in (
-            'a:has-text("NIO")',
-            'a[href*="land_corporativo"]',
-            'a[href*="empresas.php"]',
-        ):
-            try:
-                loc = page.locator(seletor).first
-                if loc.count() and loc.is_visible(timeout=2000):
-                    loc.click(timeout=8000)
-                    page.wait_for_timeout(1500)
-                    return
-            except Exception:
+    if "escolher_corporativo" not in url and "gestaodeterceiros" not in url:
+        return
+    # Preferir o card/ambiente NIO (não a empresa do diretor).
+    for seletor in (
+        'a:has-text("NIO")',
+        'a:has-text("53.420.564")',
+        'a[href*="land_corporativo=15000"]',
+        'a[href*="land_empresa=370721"]',
+        'a[href*="empresas.php"]',
+    ):
+        try:
+            loc = page.locator(seletor)
+            if loc.count() < 1:
                 continue
+            alvo = loc.first
+            if alvo.is_visible(timeout=2500):
+                alvo.click(timeout=8000)
+                page.wait_for_timeout(2000)
+                logger.info("[NIO terceiros] Ambiente selecionado via %s → %s", seletor, page.url)
+                return
+        except Exception:
+            continue
+
+
+def _pagina_pronta_colaboradores(page) -> tuple[bool, str, str]:
+    url = page.url or ""
+    try:
+        html = page.content() or ""
+    except Exception:
+        html = ""
+    return _html_tem_lista_colaboradores(html), url, html
 
 
 def renovar_sessao_login_diretor() -> Path:
@@ -397,8 +444,8 @@ def renovar_sessao_login_diretor() -> Path:
             )
         page = context.new_page()
         page.set_default_timeout(25000)
-        page.goto(url_lista(0), wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1200)
+        page.goto(url_home_empresa(), wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1500)
 
         url_atual = page.url or ""
         html = ""
@@ -407,13 +454,21 @@ def renovar_sessao_login_diretor() -> Path:
         except Exception:
             pass
 
+        fez_login_vtal = False
         if pagina_login_vtal(html=html, url=url_atual) or "login.vtal.com" in url_atual.lower():
+            fez_login_vtal = True
             _preencher_login_vtal(page, matricula, senha)
-            page.wait_for_timeout(3500)
+            page.wait_for_timeout(4000)
             try:
-                page.wait_for_load_state("domcontentloaded", timeout=20000)
+                page.wait_for_load_state("domcontentloaded", timeout=25000)
             except Exception:
                 pass
+            # Aguarda sair do IdP (redirect SSO).
+            for _ in range(20):
+                url_atual = (page.url or "").lower()
+                if "login.vtal.com" not in url_atual:
+                    break
+                page.wait_for_timeout(500)
             url_atual = page.url or ""
             try:
                 html = page.content() or ""
@@ -424,37 +479,51 @@ def renovar_sessao_login_diretor() -> Path:
                     "Login V.tal travado em FAST PASS/OTP. "
                     "Use um Diretor com login senha sem FAST PASS ou aprove no app e tente de novo."
                 )
-            if pagina_login_vtal(html=html, url=url_atual):
+            if "login.vtal.com" in (url_atual or "").lower() or pagina_login_vtal(html=html, url=url_atual):
                 raise SessaoNioExpirada(
                     "Falha no login automático do Diretor na V.tal. "
                     "Verifique matrícula/senha PAP do perfil Diretoria."
                 )
+            logger.info("[NIO terceiros] Login V.tal OK → %s", url_atual)
 
-        _selecionar_ambiente_nio(page)
+        if "escolher_corporativo" in (page.url or "").lower():
+            _selecionar_ambiente_nio(page)
+
+        # Entra no contexto da empresa e abre a lista de colaboradores.
+        page.goto(url_home_empresa(), wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1200)
+        if "escolher_corporativo" in (page.url or "").lower():
+            _selecionar_ambiente_nio(page)
+            page.goto(url_home_empresa(), wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(1200)
+
         page.goto(url_lista(0), wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)
-        url_final = page.url or ""
-        html_final = ""
-        try:
-            html_final = page.content() or ""
-        except Exception:
-            pass
+        page.wait_for_timeout(2000)
+        ok, url_final, html_final = _pagina_pronta_colaboradores(page)
+        if not ok:
+            if "escolher_corporativo" in (url_final or "").lower():
+                _selecionar_ambiente_nio(page)
+                page.goto(url_lista(0), wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2000)
+                ok, url_final, html_final = _pagina_pronta_colaboradores(page)
+
         if pagina_login_vtal(html=html_final, url=url_final):
             raise SessaoNioExpirada(
                 "Após o login, a sessão ainda está no IdP V.tal. Tente novamente em instantes."
             )
-        if not (re.search(r"colaborador=\d+", html_final, re.I) or "Colaboradores" in html_final):
-            # Pode ainda estar em escolher_corporativo
-            _selecionar_ambiente_nio(page)
-            page.goto(url_lista(0), wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(1500)
-            html_final = page.content() or ""
-            url_final = page.url or ""
-            if pagina_login_vtal(html=html_final, url=url_final):
-                raise SessaoNioExpirada("Sessão NIO não autenticou após selecionar o ambiente.")
+        if not ok:
+            raise SessaoNioExpirada(
+                "Login do Diretor concluiu, mas a lista de terceiros não carregou "
+                f"(url={url_final[:180]}). Sem gravar sessão incompleta."
+            )
 
         context.storage_state(path=str(path))
-        logger.info("[NIO terceiros] Sessão salva em %s", path)
+        logger.info(
+            "[NIO terceiros] Sessão salva em %s (login_vtal=%s, url=%s, cookies_ok)",
+            path,
+            fez_login_vtal,
+            url_final[:160],
+        )
         return path
     finally:
         try:
@@ -498,9 +567,11 @@ def garantir_sessao_nio(forcar_relogin: bool = False) -> None:
                     last_error="",
                 )
             except Exception as exc:
+                erro = str(exc)
                 _salvar_login_meta(
                     last_failure_at=time.time(),
-                    last_error=str(exc)[:500],
+                    last_error=erro[:500],
+                    cooldown_s=_cooldown_segundos_para_erro(erro),
                 )
                 raise
 
