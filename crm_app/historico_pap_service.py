@@ -631,6 +631,30 @@ def _datas_url_correspondem(url: str, data_inicio: date | None, data_fim: date |
     return ini_raw[:10] == data_inicio.isoformat() and fim_raw[:10] == data_fim.isoformat()
 
 
+def _rewritar_url_vendas_periodo(url: str, data_inicio: date, data_fim: date, *, limit: int = 200) -> str:
+    """Troca só dataInicio/dataFim (e limit) na URL; mantém demais params da SPA."""
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    parsed = urlparse(url)
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    out: list[tuple[str, str]] = []
+    seen_limit = False
+    for k, v in pairs:
+        lk = k.lower()
+        if lk == "datainicio":
+            out.append((k, _iso_inicio(data_inicio)))
+        elif lk == "datafim":
+            out.append((k, _iso_fim(data_fim)))
+        elif lk == "limit":
+            out.append((k, str(limit)))
+            seen_limit = True
+        else:
+            out.append((k, v))
+    if not seen_limit:
+        out.append(("limit", str(limit)))
+    return urlunparse(parsed._replace(query=urlencode(out)))
+
+
 def _authorization_de_request(request) -> str:
     try:
         auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
@@ -842,8 +866,10 @@ def _tentar_clicar_filtrar(
         'button:has-text("Aplicar")',
     ]
     seletores_abrir_filtro = [
-        'span:has-text("Filtros")',
+        'button#drawer-filter',
+        '#drawer-filter',
         'button:has-text("Filtros")',
+        'span:has-text("Filtros")',
         'div:has-text("Filtro")',
     ]
 
@@ -853,7 +879,14 @@ def _tentar_clicar_filtrar(
             if btn and btn.is_visible():
                 logger.info("[HISTORICO PAP] Abrindo filtros com '%s'...", sel)
                 _force_click(page, btn)
-                page.wait_for_timeout(1200)
+                page.wait_for_timeout(2000)
+                try:
+                    page.wait_for_selector(
+                        '.ant-picker-input input, input[placeholder*="Data" i], input[type="date"], .ant-drawer-open input',
+                        timeout=4000,
+                    )
+                except Exception:
+                    pass
                 break
         except Exception:
             pass
@@ -874,9 +907,13 @@ def _tentar_clicar_filtrar(
     logger.warning("[HISTORICO PAP] Não encontrou botão de filtrar/buscar na página histórico.")
 
 
+def _url_eh_api_pap(url: str) -> bool:
+    return "pap-api.niointernet.com.br" in ((url or "").lower())
+
+
 def _url_eh_vendas_pap(url: str) -> bool:
     u = (url or "").lower()
-    return "pap-api.niointernet.com.br" in u and "/api/portal/vendas" in u
+    return _url_eh_api_pap(u) and "/api/portal/vendas" in u
 
 
 def _coletar_vendas_via_rede_spa(
@@ -888,11 +925,12 @@ def _coletar_vendas_via_rede_spa(
     max_paginas_ui: int = 8,
 ) -> list[dict]:
     """
-    Captura o JSON de /api/portal/vendas gerado pela própria SPA.
+    Captura /api/portal/vendas pela rede da SPA.
 
-    A SPA no load usa período "hoje". Sempre aplicamos Filtrar com as datas
-    pedidas; se a URL capturada ainda divergir, reconsultamos a API com o
-    Authorization EXATO interceptado (sem regenerar hash anti-replay).
+    1) Espera a SPA carregar (ela costuma chamar /vendas no período 'hoje').
+    2) Intercepta Authorization de QUALQUER request pap-api (não só /vendas).
+    3) Se o período pedido divergir (ou não houver /vendas), reconsulta com o
+       Authorization EXATO capturado — sem regenerar hash (evita jwt malformed).
     """
     if not page:
         return []
@@ -908,7 +946,7 @@ def _coletar_vendas_via_rede_spa(
 
     def _on_request(request):
         try:
-            if not _url_eh_vendas_pap(request.url):
+            if not _url_eh_api_pap(request.url):
                 return
             auth = _authorization_de_request(request)
             if auth:
@@ -956,27 +994,84 @@ def _coletar_vendas_via_rede_spa(
         except Exception as exc:
             logger.debug("[HISTORICO PAP] on_response /vendas: %s", exc)
 
+    def _reconsultar_se_possivel(motivo: str) -> list[dict]:
+        if not (captured_auth["value"] and data_inicio and data_fim):
+            return []
+        logger.warning(
+            "[HISTORICO PAP] %s — reconsultando /vendas com Authorization capturado (%s→%s).",
+            motivo,
+            data_inicio,
+            data_fim,
+        )
+        return _coletar_via_auth_capturado(
+            page,
+            authorization=captured_auth["value"],
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            tipo_api="VENDA",
+        )
+
     page.on("request", _on_request)
     page.on("response", _on_response)
+
+    def _on_route(route):
+        try:
+            req = route.request
+            if (
+                data_inicio
+                and data_fim
+                and _url_eh_vendas_pap(req.url)
+                and (req.method or "").upper() == "GET"
+                and not _datas_url_correspondem(req.url, data_inicio, data_fim)
+            ):
+                new_url = _rewritar_url_vendas_periodo(req.url, data_inicio, data_fim)
+                logger.info(
+                    "[HISTORICO PAP] Reescrevendo período na URL /vendas da SPA → %s→%s",
+                    data_inicio,
+                    data_fim,
+                )
+                route.continue_(url=new_url)
+                return
+        except Exception as exc:
+            logger.debug("[HISTORICO PAP] route rewrite falhou: %s", exc)
+        try:
+            route.continue_()
+        except Exception:
+            pass
+
+    route_installed = False
     try:
+        if data_inicio and data_fim:
+            page.route("**/api/portal/vendas**", _on_route)
+            route_installed = True
+
         _navegar_ao_historico_spa(page)
-        page.wait_for_timeout(1200)
 
-        # Sempre filtrar com o período pedido (auto-load da SPA costuma ser só "hoje")
-        _tentar_clicar_filtrar(page, data_inicio=data_inicio, data_fim=data_fim)
-
-        fim = time.time() + (timeout_ms / 1000.0)
-        while time.time() < fim and not _matched() and not collected:
+        # 1) Espera auto-load da SPA — com route, as datas já saem no período pedido
+        fim_load = time.time() + min(12.0, timeout_ms / 1000.0)
+        while time.time() < fim_load and not collected and not captured_auth["value"]:
             page.wait_for_timeout(400)
-        # Se já há resposta mas período errado, espera um pouco por uma segunda XHR
-        if collected and not _matched():
-            espera_extra = time.time() + min(8.0, timeout_ms / 1000.0)
-            while time.time() < espera_extra and not _matched():
-                page.wait_for_timeout(400)
 
         matched = _matched()
         if matched:
-            # Paginação na UI só para o período correto
+            return matched
+
+        # Se a SPA já respondeu (route deveria ter corrigido); senão tenta auth
+        if collected and captured_auth["value"] and not matched:
+            packs = _reconsultar_se_possivel("SPA respondeu fora do período mesmo com rewrite")
+            if packs:
+                return packs
+
+        # 2) Tenta Filtrar na UI (route também reescreve essa XHR)
+        _tentar_clicar_filtrar(page, data_inicio=data_inicio, data_fim=data_fim)
+        fim = time.time() + min(20.0, timeout_ms / 1000.0)
+        while time.time() < fim and not _matched():
+            if captured_auth["value"] and not collected:
+                break
+            page.wait_for_timeout(400)
+
+        matched = _matched()
+        if matched:
             for _ in range(max(0, max_paginas_ui - 1)):
                 nxt = None
                 for sel in (
@@ -1008,37 +1103,29 @@ def _coletar_vendas_via_rede_spa(
                     break
             return _matched()
 
-        # SPA ignorou as datas → reconsultar com Authorization capturado
-        if captured_auth["value"] and data_inicio and data_fim:
-            logger.warning(
-                "[HISTORICO PAP] SPA filtrou período diferente do pedido (%s→%s). "
-                "Reconsultando /vendas com Authorization capturado da SPA.",
-                data_inicio,
-                data_fim,
-            )
-            packs = _coletar_via_auth_capturado(
-                page,
-                authorization=captured_auth["value"],
-                data_inicio=data_inicio,
-                data_fim=data_fim,
-                tipo_api="VENDA",
-            )
-            if packs:
-                return packs
+        packs = _reconsultar_se_possivel(
+            "Filtrar/UI não devolveu /vendas no período"
+            if not collected
+            else "SPA filtrou período diferente do pedido"
+        )
+        if packs:
+            return packs
 
         if not collected and erros:
             logger.warning(
                 "[HISTORICO PAP] Rede SPA sem sucesso em /vendas. Último erro: %s",
                 erros[-1][:200],
             )
-        if collected and data_inicio and data_fim:
-            logger.warning(
-                "[HISTORICO PAP] Mantendo pacotes SPA mesmo com período divergente "
-                "(auth reconsulta indisponível). URLs=%s",
-                [(p.get("url") or "")[:120] for p in collected[:3]],
-            )
-        return collected
+        return _matched()
     finally:
+        if route_installed:
+            try:
+                page.unroute("**/api/portal/vendas**", _on_route)
+            except Exception:
+                try:
+                    page.unroute("**/api/portal/vendas**")
+                except Exception:
+                    pass
         try:
             page.remove_listener("request", _on_request)
         except Exception:
@@ -1047,7 +1134,6 @@ def _coletar_vendas_via_rede_spa(
             page.remove_listener("response", _on_response)
         except Exception:
             pass
-
 
 
 def _run_django_sync(func, timeout_seconds: int = 120):
@@ -1413,22 +1499,21 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
                 total,
             )
 
-    # ─── PASSO 2: Fallback API direta (só se a SPA NÃO respondeu /vendas) ───────
+    # ─── PASSO 2: Fallback — Authorization cru da SPA (sem regenerar hash) ─────
     if not spa_ok:
-        origem_coleta = "api_direta"
+        origem_coleta = "api_auth_spa"
         logger.warning(
-            "[HISTORICO PAP] Rede SPA sem resposta de /vendas — tentando API direta (fallback frágil)."
+            "[HISTORICO PAP] Rede SPA sem pacote /vendas no período — "
+            "capturando Authorization de qualquer pap-api e reconsultando."
         )
-        token = ""
         captured: dict[str, str] = {"auth": ""}
 
         def _on_request(request):
             try:
-                url = (request.url or "").lower()
-                if "pap-api.niointernet.com.br" not in url:
+                if not _url_eh_api_pap(request.url):
                     return
-                auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
-                if auth and len(auth) > 20 and "eyJ" in auth:
+                auth = _authorization_de_request(request)
+                if auth:
                     captured["auth"] = auth
             except Exception:
                 pass
@@ -1436,94 +1521,68 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
         try:
             page.on("request", _on_request)
             try:
+                # Recarrega o histórico para a SPA emitir requests autenticados
                 page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(3500)
             except Exception as exc:
-                logger.warning("[HISTORICO PAP] goto histórico (fallback token): %s", exc)
-            if captured["auth"]:
-                token = limpar_jwt(captured["auth"])
-            if not token:
-                token = _extrair_token(page)
+                logger.warning("[HISTORICO PAP] goto histórico (fallback auth): %s", exc)
+            # Dispara Filtrar só para provocar XHR e pegar Authorization
+            try:
+                _tentar_clicar_filtrar(page, data_inicio=busca.data_inicio, data_fim=busca.data_fim)
+                page.wait_for_timeout(2500)
+            except Exception:
+                pass
         finally:
             try:
                 page.remove_listener("request", _on_request)
             except Exception:
                 pass
 
-        if not token:
+        if not captured["auth"]:
             return False, (
-                "A SPA não disparou /vendas e não há token para fallback HTTP. "
+                "A SPA não disparou requests autenticados no Histórico PAP. "
                 "Alternativa: exporte o Histórico no PAP e envie o arquivo no site "
                 "(registrar exportação)."
             )
 
-        ok_jwt, payload_jwt, token_limpo = validar_e_decodificar_jwt(token)
-        if not ok_jwt:
-            return False, f"Token da sessão PAP inválido ou expirado: {token_limpo}"
-
         logger.info(
-            "[HISTORICO PAP] Fallback API direta (uuid=%s).",
-            (payload_jwt or {}).get("uuid") or (payload_jwt or {}).get("sub") or "?",
+            "[HISTORICO PAP] Fallback com Authorization cru da SPA (len=%d).",
+            len(captured["auth"]),
         )
-
+        fallback_ok = False
         for tipo_alvo in (tipos or ["VENDA", "INTERESSE", "PRE_VENDA"]):
             if _job_cancelado(busca_id):
                 break
             aliases = TIPO_API_ALIASES.get(tipo_alvo, (tipo_alvo,))
-            status_busca = STATUS_LISTA_PADRAO if tipo_alvo == "VENDA" else None
             for alias in aliases:
-                url_p1 = montar_url_vendas(
-                    data_inicio=data_ini,
-                    data_fim=data_fim,
-                    pdv=pdv or "",
+                packs = _coletar_via_auth_capturado(
+                    page,
+                    authorization=captured["auth"],
+                    data_inicio=busca.data_inicio,
+                    data_fim=busca.data_fim,
                     tipo_api=alias,
-                    page=1,
-                    limit=200,
-                    status=status_busca,
                 )
-                resp_p1 = _fetch_json(page, url_p1, token=token_limpo)
-                if not resp_p1.get("ok"):
-                    status_http = resp_p1.get("status", 0)
-                    preview = str(resp_p1.get("preview") or resp_p1.get("json") or "")[:180]
-                    if status_http in (401, 403):
-                        return False, (
-                            f"Sessão/token rejeitado pela API do PAP ao buscar {tipo_alvo} "
-                            f"(HTTP {status_http}: {preview or 'sem detalhe'}). "
-                            "Forjar Authorization fora da SPA falhou. "
-                            "Use a coleta via rede da SPA (redeploy) ou envie a exportação PAP."
-                        )
+                if not packs:
                     continue
-                lista_p1, total = extrair_lista_api(resp_p1.get("json"))
-                lista_p1 = lista_p1 or []
-                itens_brutos.extend([x for x in lista_p1 if isinstance(x, dict)])
-                paginas = max(1, -(-((total or len(lista_p1)) // 200)))
-                for pg in range(2, paginas + 1):
-                    if _job_cancelado(busca_id):
-                        break
-                    url_pg = montar_url_vendas(
-                        data_inicio=data_ini,
-                        data_fim=data_fim,
-                        pdv=pdv or "",
-                        tipo_api=alias,
-                        page=pg,
-                        limit=200,
-                        status=status_busca,
+                fallback_ok = True
+                for pack in packs:
+                    lista, total = extrair_lista_api(pack.get("json"))
+                    lista = lista or []
+                    itens_brutos.extend([x for x in lista if isinstance(x, dict)])
+                    logger.info(
+                        "[HISTORICO PAP] Fallback auth SPA %s: +%d itens (total=%s)",
+                        alias,
+                        len(lista),
+                        total,
                     )
-                    resp_pg = _fetch_json(page, url_pg, token=token_limpo)
-                    if not resp_pg.get("ok"):
-                        break
-                    lista_pg, _ = extrair_lista_api(resp_pg.get("json"))
-                    if not lista_pg:
-                        break
-                    itens_brutos.extend([x for x in lista_pg if isinstance(x, dict)])
-                    time.sleep(_intervalo() * 0.5)
                 break
 
-    if not spa_ok and not itens_brutos:
-        return False, (
-            "Nenhum pedido obtido: a SPA não retornou /vendas e o fallback HTTP falhou. "
-            "Alternativa estável: exportar no PAP e enviar o arquivo no site."
-        )
+        if not fallback_ok:
+            return False, (
+                "Nenhum pedido obtido: a SPA não retornou /vendas no período e o "
+                "fallback com Authorization capturado também falhou. "
+                "Alternativa estável: exportar no PAP e enviar o arquivo no site."
+            )
 
     vistos = set()
     for v in itens_brutos:
@@ -1569,7 +1628,7 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
     msg = (
         "Busca efetuada via rede da SPA (resposta de /vendas capturada)."
         if origem_coleta == "spa_rede"
-        else "Busca efetuada via API direta (fallback)."
+        else "Busca efetuada com Authorization capturado da SPA (reconsulta de período)."
     )
     _run_django_sync(
         lambda: _atualizar(
@@ -1625,6 +1684,9 @@ def _executar_busca(busca_id: int, login_pap_id: int, token_manual: str = ""):
 
     def _token_rejeitado(err_msg: str) -> bool:
         low = (err_msg or "").lower()
+        # jwt malformed ao forjar hash é bug nosso — NÃO é sessão morta; cooldown queima o Igor.
+        if "jwt malformed" in low or "forjar authorization" in low:
+            return False
         return (
             "401" in low
             or "403" in low

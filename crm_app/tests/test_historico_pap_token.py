@@ -48,6 +48,20 @@ class HistoricoPapDatasUrlTest(SimpleTestCase):
         )
         self.assertFalse(_datas_url_correspondem(url, date(2026, 9, 1), date(2026, 9, 9)))
 
+    def test_rewritar_periodo_url(self):
+        from crm_app.historico_pap_service import _rewritar_url_vendas_periodo
+
+        url = (
+            "https://pap-api.niointernet.com.br/api/portal/vendas"
+            "?dataInicio=2026-09-09T00:00:00-03:00&dataFim=2026-09-09T23:59:59-03:00"
+            "&segmento=EMPRESARIAL%2CVAREJO&tipoVenda=VENDA&page=1&limit=15"
+            "&status=ANALISE_BO"
+        )
+        new_url = _rewritar_url_vendas_periodo(url, date(2026, 9, 1), date(2026, 9, 9), limit=200)
+        self.assertTrue(_datas_url_correspondem(new_url, date(2026, 9, 1), date(2026, 9, 9)))
+        self.assertIn("limit=200", new_url)
+        self.assertIn("tipoVenda=VENDA", new_url)
+
 
 class HistoricoPapTokenValidationTest(SimpleTestCase):
     def test_token_valido(self):
