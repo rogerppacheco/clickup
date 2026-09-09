@@ -87,12 +87,12 @@ def _cooldown_ativo() -> str | None:
     falha = float(meta.get("last_failure_at") or 0)
     if not falha:
         return None
-    cooldown = int(meta.get("cooldown_s") or _LOGIN_COOLDOWN_VTAL_S)
+    erro = meta.get("last_error") or "falha anterior no login V.tal"
+    cooldown = int(meta.get("cooldown_s") or _cooldown_segundos_para_erro(erro))
     decorrido = time.time() - falha
     if decorrido >= cooldown:
         return None
     resto = int(cooldown - decorrido)
-    erro = meta.get("last_error") or "falha anterior no login V.tal"
     return (
         f"Login V.tal em cooldown ({resto}s). Evitando novas tentativas. "
         f"Último erro: {erro}"
