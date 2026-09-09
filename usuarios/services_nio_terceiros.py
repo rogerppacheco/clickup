@@ -276,6 +276,11 @@ def fetch_html(url: str, sessao: requests.Session | None = None) -> str:
     return _garantir_html_autenticado(resposta.text or "", resposta.url or url)
 
 
+def url_auth_nds() -> str:
+    """Entrada ADFS/NDS do portal (botão Login: NDS na landing)."""
+    return f"{base_url()}/auth/adfs/?grp=57450"
+
+
 def url_portal_inicio() -> str:
     """Entrada do portal (landing Techsocial → Login NDS → SSO V.tal)."""
     return f"{base_url()}/"
@@ -402,45 +407,38 @@ def _pagina_landing_techsocial(html: str = "", url: str = "") -> bool:
 
 
 def _clicar_login_nds(page) -> bool:
-    """Na landing Techsocial, inicia SSO clicando Login NDS / Acessar o sistema."""
+    """Inicia SSO NDS: preferir URL direta do botão Login:NDS (/auth/adfs/?grp=57450)."""
+    alvo = url_auth_nds()
+    try:
+        logger.info("[NIO terceiros] Abrindo SSO NDS direto: %s", alvo)
+        page.goto(alvo, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1500)
+        logger.info("[NIO terceiros] Após NDS URL → %s", page.url)
+        return True
+    except Exception as exc:
+        logger.warning("[NIO terceiros] goto NDS falhou (%s); tentando clique no botão", exc)
+
     for seletor in (
-        'button:has-text("Login: NDS")',
         'button:has-text("NDS")',
-        'a:has-text("Login: NDS")',
+        'button.home_button:has-text("NDS")',
+        'button:has-text("Login:")',
         'a:has-text("Acessar o sistema")',
         'button:has-text("Acessar o sistema")',
-        'text=Acessar o sistema',
-        'text=Login: NDS',
+        '#btn_acessar_sistema',
     ):
         try:
             loc = page.locator(seletor)
             if loc.count() < 1:
                 continue
-            alvo = loc.first
-            if alvo.is_visible(timeout=2500):
-                alvo.click(timeout=10000)
-                page.wait_for_timeout(2000)
+            alvo_el = loc.first
+            if alvo_el.is_visible(timeout=2500):
+                with page.expect_navigation(timeout=30000, wait_until="domcontentloaded"):
+                    alvo_el.click(timeout=10000)
+                page.wait_for_timeout(1500)
                 logger.info("[NIO terceiros] Clique Login NDS (%s) → %s", seletor, page.url)
                 return True
         except Exception:
             continue
-    # Fallback: procura link/botão via JS
-    try:
-        clicou = page.evaluate(
-            """() => {
-              const els = [...document.querySelectorAll('a,button,input,[onclick],div,span')];
-              const alvo = els.find(el => /nds|acessar o sistema/i.test((el.innerText||el.value||'')));
-              if (!alvo) return false;
-              alvo.click();
-              return true;
-            }"""
-        )
-        if clicou:
-            page.wait_for_timeout(2000)
-            logger.info("[NIO terceiros] Clique Login NDS via JS → %s", page.url)
-            return True
-    except Exception:
-        pass
     return False
 
 
@@ -593,21 +591,25 @@ def renovar_sessao_login_diretor() -> Path:
             pass
         logger.info("[NIO terceiros] Passo 1 URL=%s", url_atual)
 
-        # 1b) Landing pública → clicar Login NDS (isso abre o SSO V.tal).
+        # 1b) Landing pública → SSO NDS (URL real do botão Login:NDS).
         if _pagina_landing_techsocial(html=html, url=url_atual) or (
             "login.vtal.com" not in url_atual.lower()
             and "escolher_corporativo" not in url_atual.lower()
             and "empresas.php" not in url_atual.lower()
             and not _html_tem_lista_colaboradores(html)
         ):
-            logger.info("[NIO terceiros] Passo 1b: clicar Login NDS na landing")
+            logger.info("[NIO terceiros] Passo 1b: iniciar SSO NDS")
             if not _clicar_login_nds(page):
-                # Espera redirect espontâneo; se não vier, falha clara.
-                page.wait_for_timeout(2000)
-            for _ in range(30):
+                raise SessaoNioExpirada(
+                    "Não foi possível iniciar o Login NDS (/auth/adfs/?grp=57450)."
+                )
+            for _ in range(40):
                 url_atual = (page.url or "").lower()
                 if "login.vtal.com" in url_atual or "nidp" in url_atual or "escolher_corporativo" in url_atual:
                     break
+                if "auth/adfs" in url_atual:
+                    page.wait_for_timeout(500)
+                    continue
                 page.wait_for_timeout(500)
             url_atual = page.url or ""
             try:
@@ -615,6 +617,11 @@ def renovar_sessao_login_diretor() -> Path:
             except Exception:
                 html = ""
             logger.info("[NIO terceiros] Passo 1b URL=%s", url_atual)
+            if _pagina_landing_techsocial(html=html, url=url_atual) and "login.vtal.com" not in url_atual.lower():
+                raise SessaoNioExpirada(
+                    "SSO NDS não redirecionou para o V.tal "
+                    f"(url={url_atual[:180]})."
+                )
 
         # 2) Login V.tal se necessário; esperar redirect natural (sem goto).
         fez_login_vtal = False
