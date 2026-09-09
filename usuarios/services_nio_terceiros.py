@@ -277,7 +277,7 @@ def fetch_html(url: str, sessao: requests.Session | None = None) -> str:
 
 
 def url_portal_inicio() -> str:
-    """Entrada do portal (deixa o SSO montar o RelayState correto)."""
+    """Entrada do portal (landing Techsocial → Login NDS → SSO V.tal)."""
     return f"{base_url()}/"
 
 
@@ -296,9 +296,17 @@ def url_cadastro(nio_id: str) -> str:
 
 
 def url_home_empresa() -> str:
+    # Params reais do portal (escolher_corporativo → NIO), não land_*.
     return (
         f"{base_url()}/empresas.php?pagina=empresas&id={empresa_id()}"
-        f"&ac=emp_home&land_corporativo=15000&land_empresa={empresa_id()}"
+        f"&ac=emp_home&corporativo=15000&trocaempresa={empresa_id()}"
+    )
+
+
+def url_nio_ambiente() -> str:
+    return (
+        f"{base_url()}/empresas.php?pagina=empresas&id={empresa_id()}"
+        f"&ac=emp_home&corporativo=15000&trocaempresa={empresa_id()}"
     )
 
 
@@ -376,16 +384,73 @@ def _preencher_login_vtal(page, matricula: str, senha: str) -> None:
         page.keyboard.press("Enter")
 
 
+def _pagina_landing_techsocial(html: str = "", url: str = "") -> bool:
+    """Landing pública do portal (antes do clique Login NDS)."""
+    alvo = f"{url} {html}".lower()
+    if "escolher_corporativo" in alvo or "empresas.php" in alvo or "login.vtal.com" in alvo:
+        return False
+    return any(
+        trecho in alvo
+        for trecho in (
+            "acessar o sistema",
+            "login: nds",
+            "login:\nnds",
+            "symsupply by",
+            "logonashai",
+        )
+    )
+
+
+def _clicar_login_nds(page) -> bool:
+    """Na landing Techsocial, inicia SSO clicando Login NDS / Acessar o sistema."""
+    for seletor in (
+        'button:has-text("Login: NDS")',
+        'button:has-text("NDS")',
+        'a:has-text("Login: NDS")',
+        'a:has-text("Acessar o sistema")',
+        'button:has-text("Acessar o sistema")',
+        'text=Acessar o sistema',
+        'text=Login: NDS',
+    ):
+        try:
+            loc = page.locator(seletor)
+            if loc.count() < 1:
+                continue
+            alvo = loc.first
+            if alvo.is_visible(timeout=2500):
+                alvo.click(timeout=10000)
+                page.wait_for_timeout(2000)
+                logger.info("[NIO terceiros] Clique Login NDS (%s) → %s", seletor, page.url)
+                return True
+        except Exception:
+            continue
+    # Fallback: procura link/botão via JS
+    try:
+        clicou = page.evaluate(
+            """() => {
+              const els = [...document.querySelectorAll('a,button,input,[onclick],div,span')];
+              const alvo = els.find(el => /nds|acessar o sistema/i.test((el.innerText||el.value||'')));
+              if (!alvo) return false;
+              alvo.click();
+              return true;
+            }"""
+        )
+        if clicou:
+            page.wait_for_timeout(2000)
+            logger.info("[NIO terceiros] Clique Login NDS via JS → %s", page.url)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _selecionar_ambiente_nio(page) -> bool:
     """Clica no card NIO na tela escolher_corporativo. Retorna True se clicou."""
-    url = (page.url or "").lower()
-    if "escolher_corporativo" not in url:
-        return False
     for seletor in (
+        'a[href*="trocaempresa=370721"]',
+        'a[href*="corporativo=15000"][href*="empresas.php"]',
         'a:has-text("NIO")',
         'a:has-text("53.420.564")',
-        'a[href*="land_corporativo=15000"]',
-        'a[href*="land_empresa=370721"]',
     ):
         try:
             loc = page.locator(seletor)
@@ -515,7 +580,7 @@ def renovar_sessao_login_diretor() -> Path:
         page = context.new_page()
         page.set_default_timeout(30000)
 
-        # 1) Entrada pelo portal (RelayState do Nashai) — NÃO usar deep-link antes do SSO.
+        # 1) Entrada pelo portal (landing Techsocial).
         logger.info("[NIO terceiros] Passo 1: abrir portal %s", url_portal_inicio())
         page.goto(url_portal_inicio(), wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(1500)
@@ -526,6 +591,30 @@ def renovar_sessao_login_diretor() -> Path:
             html = page.content() or ""
         except Exception:
             pass
+        logger.info("[NIO terceiros] Passo 1 URL=%s", url_atual)
+
+        # 1b) Landing pública → clicar Login NDS (isso abre o SSO V.tal).
+        if _pagina_landing_techsocial(html=html, url=url_atual) or (
+            "login.vtal.com" not in url_atual.lower()
+            and "escolher_corporativo" not in url_atual.lower()
+            and "empresas.php" not in url_atual.lower()
+            and not _html_tem_lista_colaboradores(html)
+        ):
+            logger.info("[NIO terceiros] Passo 1b: clicar Login NDS na landing")
+            if not _clicar_login_nds(page):
+                # Espera redirect espontâneo; se não vier, falha clara.
+                page.wait_for_timeout(2000)
+            for _ in range(30):
+                url_atual = (page.url or "").lower()
+                if "login.vtal.com" in url_atual or "nidp" in url_atual or "escolher_corporativo" in url_atual:
+                    break
+                page.wait_for_timeout(500)
+            url_atual = page.url or ""
+            try:
+                html = page.content() or ""
+            except Exception:
+                html = ""
+            logger.info("[NIO terceiros] Passo 1b URL=%s", url_atual)
 
         # 2) Login V.tal se necessário; esperar redirect natural (sem goto).
         fez_login_vtal = False
@@ -557,12 +646,13 @@ def renovar_sessao_login_diretor() -> Path:
             )
 
         # 3) Escolher corporativo NIO (como no browser local).
-        if "escolher_corporativo" in (page.url or "").lower():
+        if "escolher_corporativo" in (page.url or "").lower() or "qual ambiente" in (html or "").lower():
             logger.info("[NIO terceiros] Passo 3: escolher ambiente NIO")
             if not _selecionar_ambiente_nio(page):
-                raise SessaoNioExpirada(
-                    "Tela escolher_corporativo aberta, mas o card NIO não foi encontrado."
-                )
+                # Fallback: navega para o href real do card NIO.
+                logger.info("[NIO terceiros] Passo 3 fallback: goto url_nio_ambiente")
+                page.goto(url_nio_ambiente(), wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2000)
             page.wait_for_timeout(1500)
 
         # 4) Abrir aba Terceiros/Colaboradores por clique de menu (fluxo local).
@@ -592,6 +682,11 @@ def renovar_sessao_login_diretor() -> Path:
         if pagina_login_vtal(html=html_final, url=url_final):
             raise SessaoNioExpirada(
                 "Após o login, a sessão ainda está no IdP V.tal. Tente novamente em instantes."
+            )
+        if _pagina_landing_techsocial(html=html_final, url=url_final):
+            raise SessaoNioExpirada(
+                "Ainda na landing Techsocial após o fluxo de login "
+                f"(url={url_final[:180]}). Login NDS/V.tal não completou."
             )
         if not ok:
             raise SessaoNioExpirada(
