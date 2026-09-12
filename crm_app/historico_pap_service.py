@@ -1178,7 +1178,33 @@ def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim:
     logger.info("[HISTORICO PAP] Interação datas %s→%s ok=%s", ini, fim, ok)
 
 
-def _disparar_vendas_via_spa_js(page, *, data_inicio: date, data_fim: date) -> dict | None:
+def _contar_itens_e_total_packs(packs: list[dict]) -> tuple[int, int | None]:
+    """Soma itens únicos por pacote e o maior total_api reportado."""
+    from crm_app.historico_pap import extrair_lista_api
+
+    n = 0
+    total: int | None = None
+    for pack in packs or []:
+        lista, tot = extrair_lista_api(pack.get("json"))
+        n += len(lista or [])
+        if tot is not None:
+            try:
+                ti = int(tot)
+            except (TypeError, ValueError):
+                continue
+            if total is None or ti > total:
+                total = ti
+    return n, total
+
+
+def _disparar_vendas_via_spa_js(
+    page,
+    *,
+    data_inicio: date,
+    data_fim: date,
+    page_n: int = 1,
+    limit: int = 200,
+) -> dict | None:
     """
     Dispara GET /vendas a partir do browser com JWT do cookie + anti-replay fresco
     (mesmo algoritmo da SPA: XOR + base64 de JSON.stringify(new Date)).
@@ -1194,8 +1220,8 @@ def _disparar_vendas_via_spa_js(page, *, data_inicio: date, data_fim: date) -> d
         data_fim=_iso_fim(data_fim),
         pdv="",
         tipo_api="VENDA",
-        page=1,
-        limit=200,
+        page=max(1, int(page_n or 1)),
+        limit=max(1, int(limit or 200)),
         status=STATUS_LISTA_PADRAO,
     )
     try:
@@ -1635,16 +1661,23 @@ def _coletar_vendas_via_rede_spa(
                 pass
             return
 
+        # Sempre reescreve: garante período pedido + limit=200 (SPA default ≈15/página).
+        # Antes só reescrevíamos se a data divergisse → limit ficava 15 e total_api=74
+        # gerava só a 1ª página.
         final_url = req.url
         rewrote = False
-        if data_inicio and data_fim and not _datas_url_correspondem(req.url, data_inicio, data_fim):
-            final_url = _rewritar_url_vendas_periodo(req.url, data_inicio, data_fim)
-            rewrote = True
-            logger.info(
-                "[HISTORICO PAP] route.fetch reescrevendo período /vendas → %s→%s",
-                data_inicio,
-                data_fim,
+        if data_inicio and data_fim:
+            novo = _rewritar_url_vendas_periodo(
+                req.url, data_inicio, data_fim, limit=200
             )
+            if novo != req.url:
+                final_url = novo
+                rewrote = True
+                logger.info(
+                    "[HISTORICO PAP] route.fetch reescrevendo /vendas (período+limit=200) → %s→%s",
+                    data_inicio,
+                    data_fim,
+                )
 
         try:
             api_resp = route.fetch(url=final_url) if rewrote else route.fetch()
@@ -1762,19 +1795,40 @@ def _coletar_vendas_via_rede_spa(
             matched = list(collected)
 
         if matched:
-            for _ in range(max(0, max_paginas_ui - 1)):
+            # Paginação: SPA default ≈15; se total_api > itens, busca próximas páginas
+            n_itens, total_api = _contar_itens_e_total_packs(matched)
+            logger.info(
+                "[HISTORICO PAP] Após Filtrar: itens=%s total_api=%s pacotes=%s",
+                n_itens,
+                total_api,
+                len(matched),
+            )
+
+            def _precisa_mais() -> bool:
+                ni, tot = _contar_itens_e_total_packs(_matched() or list(collected))
+                return bool(tot is not None and ni < tot)
+
+            for pagina_ui in range(max(0, max_paginas_ui - 1)):
+                if not _precisa_mais():
+                    break
                 nxt = None
                 for sel in (
                     'button:has-text("Próximo")',
                     'button:has-text("Proximo")',
+                    'button[aria-label*="next" i]',
+                    'button[aria-label*="próxima" i]',
+                    'button[aria-label*="Proxima" i]',
+                    'li.MuiPaginationItem-root[aria-label*="next" i]:not(.Mui-disabled)',
+                    'button.MuiPaginationItem-root[aria-label*="Go to next" i]',
                     'li.ant-pagination-next:not(.ant-pagination-disabled) button',
-                    'button[aria-label="next"]',
-                    'button[aria-label="Próxima página"]',
+                    ".MuiTablePagination-actions button:last-child:not([disabled])",
                     ".pagination button:has-text(\">\")",
                 ):
                     try:
-                        cand = page.query_selector(sel)
-                        if cand and cand.is_visible() and cand.is_enabled():
+                        cand = page.locator(sel).first
+                        if cand.count() == 0:
+                            continue
+                        if cand.is_visible() and cand.is_enabled():
                             nxt = cand
                             break
                     except Exception:
@@ -1783,16 +1837,83 @@ def _coletar_vendas_via_rede_spa(
                     break
                 antes = len(_matched() or matched)
                 try:
-                    _force_click(page, nxt)
+                    nxt.scroll_into_view_if_needed(timeout=2000)
+                    nxt.click(timeout=4000)
                 except Exception:
-                    break
-                page.wait_for_timeout(2000)
-                agora = _matched() or list(collected)
-                if len(agora) == antes:
+                    try:
+                        _force_click(page, nxt)
+                    except Exception:
+                        break
+                page.wait_for_timeout(2200)
+                agora = len(_matched() or list(collected))
+                if agora == antes:
                     page.wait_for_timeout(2000)
                 if len(_matched() or list(collected)) == antes:
                     break
-            return _matched() or list(collected)
+                logger.info(
+                    "[HISTORICO PAP] Paginação UI página extra #%s (pacotes=%s)",
+                    pagina_ui + 2,
+                    len(_matched() or list(collected)),
+                )
+
+            # Fallback: páginas via XHR no browser (anti-replay fresco) se ainda faltar
+            if data_inicio and data_fim and _precisa_mais():
+                n_itens, total_api = _contar_itens_e_total_packs(
+                    _matched() or list(collected)
+                )
+                limite = 200
+                max_p = min(
+                    max_paginas_ui,
+                    max(1, ((total_api or n_itens) + limite - 1) // limite),
+                )
+                # Já temos page 1; buscar 2..N se limit=200 ainda incompleto, ou
+                # se API ignora limit e usa 15 — percorrer pelo total.
+                page_size = max(n_itens, 1) if n_itens else 15
+                if total_api and n_itens and n_itens < 50:
+                    # Provável page size da SPA (15)
+                    page_size = n_itens
+                max_p = min(
+                    max_paginas_ui,
+                    max(1, ((total_api or 0) + page_size - 1) // page_size),
+                )
+                logger.info(
+                    "[HISTORICO PAP] Completando páginas via JS: itens=%s/%s max_p=%s",
+                    n_itens,
+                    total_api,
+                    max_p,
+                )
+                for page_n in range(2, max_p + 1):
+                    if not _precisa_mais():
+                        break
+                    pack = _disparar_vendas_via_spa_js(
+                        page,
+                        data_inicio=data_inicio,
+                        data_fim=data_fim,
+                        page_n=page_n,
+                        limit=page_size,
+                    )
+                    fim_js = time.time() + 6.0
+                    antes = len(_matched() or list(collected))
+                    while time.time() < fim_js and len(_matched() or list(collected)) == antes:
+                        page.wait_for_timeout(250)
+                    if pack and len(_matched() or list(collected)) == antes:
+                        _append_pack(pack["url"], pack["status"], pack["json"])
+                    logger.info(
+                        "[HISTORICO PAP] Página JS %s → pacotes=%s itens≈%s",
+                        page_n,
+                        len(_matched() or list(collected)),
+                        _contar_itens_e_total_packs(_matched() or list(collected))[0],
+                    )
+
+            final = _matched() or list(collected)
+            ni, tot = _contar_itens_e_total_packs(final)
+            logger.info(
+                "[HISTORICO PAP] Coleta SPA final: pacotes=%s itens=%s total_api=%s",
+                len(final),
+                ni,
+                tot,
+            )
+            return final
 
         # 3) Disparo no browser: cookie JWT + anti-replay fresco (igual à SPA)
         if data_inicio and data_fim:
