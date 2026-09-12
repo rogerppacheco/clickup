@@ -751,7 +751,11 @@ def _coletar_via_auth_capturado(
 
 
 def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim: date | None = None) -> None:
-    """Preenche datas no filtro do Histórico (React) para a SPA disparar /vendas no período certo."""
+    """Preenche datas no filtro do Histórico (React/Ant) para a SPA disparar /vendas.
+
+    Não depende só de offsetParent (drawer Ant às vezes esconde inputs).
+    O período pedido ainda é garantido via route.fetch na interceptação de /vendas.
+    """
     if not page:
         return
     ini = data_inicio or date.today()
@@ -764,36 +768,40 @@ def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim:
                 const setter = Object.getOwnPropertyDescriptor(
                     window.HTMLInputElement.prototype, 'value'
                 ).set;
-                const inputs = Array.from(document.querySelectorAll(
-                    'input[type="date"], .ant-picker-input input, input'
-                ));
+                const roots = [
+                    ...document.querySelectorAll('.ant-drawer-open, .ant-drawer-content-wrapper, .ant-modal-open, [class*="drawer"]'),
+                    document.body,
+                ];
+                const seen = new Set();
+                const inputs = [];
+                roots.forEach((root) => {
+                    root.querySelectorAll('input').forEach((i) => {
+                        if (seen.has(i)) return;
+                        seen.add(i);
+                        inputs.push(i);
+                    });
+                });
                 let count = 0;
                 const vals = [];
                 inputs.forEach((i) => {
-                    if (i.disabled || !i.offsetParent) return;
+                    if (i.disabled) return;
                     const ph = (i.placeholder || '').toLowerCase();
                     const name = ((i.name || '') + ' ' + (i.id || '') + ' ' + (i.className || '')).toLowerCase();
-                    const isData = i.type === 'date' || ph.includes('data') || name.includes('data')
-                        || name.includes('inicio') || name.includes('fim') || name.includes('date')
-                        || name.includes('picker') || (i.closest && i.closest('.ant-picker'));
-                    if (!isData) return;
-                    let val = null;
+                    const inPicker = !!(i.closest && i.closest('.ant-picker'));
+                    const isData = i.type === 'date' || inPicker || ph.includes('data') || ph.includes('início')
+                        || ph.includes('inicio') || ph.includes('fim') || name.includes('data')
+                        || name.includes('date') || name.includes('picker');
+                    if (!isData && i.type !== 'text') return;
+                    // No drawer, preenche pickers/datas; fora do drawer só type=date
+                    if (!isData && !i.closest('.ant-drawer-open') && !i.closest('.ant-picker')) return;
+                    let val;
                     if (i.type === 'date') {
                         val = (count === 0) ? iniIso : fimIso;
+                    } else if (ph.includes('fim') || name.includes('fim') || name.includes('end') || count > 0) {
+                        val = fimBr;
                     } else {
                         val = iniBr;
-                        if (count > 0 || ph.includes('fim') || name.includes('fim') || name.includes('end')) {
-                            val = fimBr;
-                        }
-                        if (count === 0 && (ph.includes('fim') || name.includes('fim') || name.includes('end'))) {
-                            val = fimBr;
-                        } else if (count === 0) {
-                            val = iniBr;
-                        } else {
-                            val = fimBr;
-                        }
                     }
-                    if (!val) return;
                     const tracker = i._valueTracker;
                     if (tracker) tracker.setValue('');
                     setter.call(i, val);
@@ -817,26 +825,23 @@ def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim:
     except Exception as exc:
         logger.debug("[HISTORICO PAP] Falha ao preencher datas SPA (JS): %s", exc)
 
-    # Reforço via digitação Playwright (Ant Design / React controlado)
+    # Reforço via digitação Playwright (Ant Design RangePicker)
     try:
         loc = page.locator(
-            '.ant-picker-input input, input[placeholder*="Data" i], input[placeholder*="data"], input[type="date"]'
+            '.ant-drawer-open .ant-picker-input input, .ant-picker-input input, '
+            'input[placeholder*="Data" i], input[placeholder*="data"], input[type="date"]'
         )
         n = loc.count()
         for idx in range(min(n, 4)):
             item = loc.nth(idx)
             try:
-                if not item.is_visible():
-                    continue
                 tipo = (item.get_attribute("type") or "").lower()
                 val = ini.isoformat() if tipo == "date" else (ini_br if idx % 2 == 0 else fim_br)
-                if tipo != "date" and idx % 2 == 1:
-                    val = fim_br
-                elif tipo == "date" and idx % 2 == 1:
+                if tipo == "date" and idx % 2 == 1:
                     val = fim.isoformat()
-                item.click(timeout=1500)
-                item.fill("")
-                item.type(val, delay=20)
+                item.click(timeout=1500, force=True)
+                item.fill(val, force=True)
+                item.press("Enter")
                 item.press("Tab")
             except Exception:
                 continue
@@ -900,9 +905,27 @@ def _tentar_clicar_filtrar(
                 logger.info("[HISTORICO PAP] Clicando em '%s' para disparar XHR da SPA...", sel)
                 _force_click(page, btn)
                 page.wait_for_timeout(2500)
+                # Segundo clique (algumas UIs Ant só disparam no 2º)
+                try:
+                    if btn.is_visible():
+                        _force_click(page, btn)
+                        page.wait_for_timeout(1500)
+                except Exception:
+                    pass
                 return
         except Exception:
             pass
+
+    # Sem drawer: tenta qualquer botão Filtrar/Buscar na página
+    try:
+        btn = page.get_by_role("button", name=re.compile(r"filtrar|buscar|pesquisar|aplicar", re.I)).first
+        if btn:
+            logger.info("[HISTORICO PAP] Clicando botão Filtrar via role...")
+            btn.click(timeout=3000, force=True)
+            page.wait_for_timeout(2500)
+            return
+    except Exception:
+        pass
 
     logger.warning("[HISTORICO PAP] Não encontrou botão de filtrar/buscar na página histórico.")
 
@@ -925,12 +948,11 @@ def _coletar_vendas_via_rede_spa(
     max_paginas_ui: int = 8,
 ) -> list[dict]:
     """
-    Captura /api/portal/vendas pela rede da SPA.
+    Captura /api/portal/vendas pela rede da SPA (modo seguro).
 
-    1) Espera a SPA carregar (ela costuma chamar /vendas no período 'hoje').
-    2) Intercepta Authorization de QUALQUER request pap-api (não só /vendas).
-    3) Se o período pedido divergir (ou não houver /vendas), reconsulta com o
-       Authorization EXATO capturado — sem regenerar hash (evita jwt malformed).
+    1) Intercepta o XHR da própria SPA com route.fetch (headers/Authorization frescos).
+    2) Se o período divergir, reescreve só dataInicio/dataFim na URL do fetch.
+    3) Nunca reutiliza Authorization fora do request original (anti-replay → jwt malformed).
     """
     if not page:
         return []
@@ -938,116 +960,131 @@ def _coletar_vendas_via_rede_spa(
     collected: list[dict] = []
     erros: list[str] = []
     captured_auth = {"value": ""}
+    seen_urls: set[str] = set()
 
     def _matched() -> list[dict]:
         if not data_inicio or not data_fim:
             return list(collected)
         return [p for p in collected if _datas_url_correspondem(p.get("url") or "", data_inicio, data_fim)]
 
+    def _append_pack(url: str, status: int, body: dict) -> None:
+        key = f"{status}|{(url or '')[:400]}"
+        if key in seen_urls:
+            return
+        seen_urls.add(key)
+        collected.append({"url": url, "status": status, "json": body})
+
     def _on_request(request):
         try:
             if not _url_eh_api_pap(request.url):
                 return
+            # Diagnóstico: o que a SPA está chamando (ajuda quando /vendas não dispara)
+            u = request.url or ""
+            if "/api/portal/" in u.lower():
+                logger.info(
+                    "[HISTORICO PAP] SPA→pap-api %s %s",
+                    request.method,
+                    u[:180],
+                )
             auth = _authorization_de_request(request)
             if auth:
                 captured_auth["value"] = auth
         except Exception:
             pass
 
-    def _on_response(response):
+    page.on("request", _on_request)
+
+    def _on_route(route):
+        """
+        Intercepta /vendas da SPA e refaz o request com route.fetch.
+
+        Importante: NÃO usar route.continue_(url=...). Trocar a URL no continue_
+        costuma perder/alterar Authorization em cross-origin → SPA não recebe
+        /vendas e o fallback com auth reutilizado cai em jwt malformed (anti-replay).
+
+        route.fetch reutiliza os headers EXATOS do request da SPA (token fresco).
+        """
+        req = route.request
+        method = (req.method or "").upper()
+        if method != "GET" or not _url_eh_vendas_pap(req.url):
+            try:
+                route.continue_()
+            except Exception:
+                pass
+            return
+
+        final_url = req.url
+        rewrote = False
+        if data_inicio and data_fim and not _datas_url_correspondem(req.url, data_inicio, data_fim):
+            final_url = _rewritar_url_vendas_periodo(req.url, data_inicio, data_fim)
+            rewrote = True
+            logger.info(
+                "[HISTORICO PAP] route.fetch reescrevendo período /vendas → %s→%s",
+                data_inicio,
+                data_fim,
+            )
+
         try:
-            if not _url_eh_vendas_pap(response.url):
-                return
-            method = (response.request.method or "").upper()
-            if method not in ("GET",):
-                return
-            status = response.status
+            api_resp = route.fetch(url=final_url) if rewrote else route.fetch()
+            status = api_resp.status
+            body = None
             preview = ""
             try:
-                text = response.text()
-                preview = (text or "")[:180]
-            except Exception:
-                text = ""
-            if status < 200 or status >= 300:
-                erros.append(f"HTTP {status}: {preview}")
-                logger.warning(
-                    "[HISTORICO PAP] SPA /vendas %s — preview=%s",
-                    status,
-                    preview.replace("\n", " "),
-                )
-                return
-            try:
-                body = response.json()
+                body = api_resp.json()
             except Exception:
                 try:
+                    text = api_resp.text()
+                    preview = (text or "")[:180]
                     body = json.loads(text) if text else None
                 except Exception:
                     body = None
-            if body is None:
-                return
-            collected.append({"url": response.url, "status": status, "json": body})
-            logger.info(
-                "[HISTORICO PAP] Capturado /vendas da SPA (status=%s, url=%s)",
-                status,
-                (response.url or "")[:220],
-            )
-        except Exception as exc:
-            logger.debug("[HISTORICO PAP] on_response /vendas: %s", exc)
 
-    def _reconsultar_se_possivel(motivo: str) -> list[dict]:
-        if not (captured_auth["value"] and data_inicio and data_fim):
-            return []
-        logger.warning(
-            "[HISTORICO PAP] %s — reconsultando /vendas com Authorization capturado (%s→%s).",
-            motivo,
-            data_inicio,
-            data_fim,
-        )
-        return _coletar_via_auth_capturado(
-            page,
-            authorization=captured_auth["value"],
-            data_inicio=data_inicio,
-            data_fim=data_fim,
-            tipo_api="VENDA",
-        )
-
-    page.on("request", _on_request)
-    page.on("response", _on_response)
-
-    def _on_route(route):
-        try:
-            req = route.request
-            if (
-                data_inicio
-                and data_fim
-                and _url_eh_vendas_pap(req.url)
-                and (req.method or "").upper() == "GET"
-                and not _datas_url_correspondem(req.url, data_inicio, data_fim)
-            ):
-                new_url = _rewritar_url_vendas_periodo(req.url, data_inicio, data_fim)
-                logger.info(
-                    "[HISTORICO PAP] Reescrevendo período na URL /vendas da SPA → %s→%s",
-                    data_inicio,
-                    data_fim,
+            if status < 200 or status >= 300:
+                erros.append(f"HTTP {status}: {preview}")
+                logger.warning(
+                    "[HISTORICO PAP] route.fetch /vendas %s — preview=%s",
+                    status,
+                    (preview or "").replace("\n", " "),
                 )
-                route.continue_(url=new_url)
-                return
+            elif body is not None:
+                _append_pack(final_url, status, body)
+                logger.info(
+                    "[HISTORICO PAP] Capturado /vendas via route.fetch (status=%s, rewrite=%s)",
+                    status,
+                    rewrote,
+                )
+
+            route.fulfill(response=api_resp)
+            return
         except Exception as exc:
-            logger.debug("[HISTORICO PAP] route rewrite falhou: %s", exc)
-        try:
-            route.continue_()
-        except Exception:
-            pass
+            logger.warning(
+                "[HISTORICO PAP] route.fetch /vendas falhou: %s — tentando continue_ com headers",
+                exc,
+            )
+            try:
+                headers = dict(req.headers)
+                if rewrote:
+                    route.continue_(url=final_url, headers=headers)
+                else:
+                    route.continue_(headers=headers)
+            except Exception:
+                try:
+                    route.continue_()
+                except Exception:
+                    try:
+                        route.abort()
+                    except Exception:
+                        pass
 
     route_installed = False
     try:
-        if data_inicio and data_fim:
-            page.route("**/api/portal/vendas**", _on_route)
-            route_installed = True
+        # Sempre intercepta /vendas: captura com headers da SPA + ajusta período se preciso
+        page.route("**/api/portal/vendas**", _on_route)
+        route_installed = True
 
         _navegar_ao_historico_spa(page)
 
-        # 1) Espera auto-load da SPA — com route, as datas já saem no período pedido
+        # 1) Espera auto-load da SPA
         fim_load = time.time() + min(12.0, timeout_ms / 1000.0)
         while time.time() < fim_load and not collected and not captured_auth["value"]:
             page.wait_for_timeout(400)
@@ -1055,22 +1092,27 @@ def _coletar_vendas_via_rede_spa(
         matched = _matched()
         if matched:
             return matched
+        # Se veio /vendas (mesmo fora do período) e o rewrite falhou, ainda devolve o capturado
+        if collected and not matched and not (data_inicio and data_fim):
+            return list(collected)
 
-        # Se a SPA já respondeu (route deveria ter corrigido); senão tenta auth
-        if collected and captured_auth["value"] and not matched:
-            packs = _reconsultar_se_possivel("SPA respondeu fora do período mesmo com rewrite")
-            if packs:
-                return packs
-
-        # 2) Tenta Filtrar na UI (route também reescreve essa XHR)
+        # 2) Tenta Filtrar na UI — o route.fetch ajusta o período no request da SPA
         _tentar_clicar_filtrar(page, data_inicio=data_inicio, data_fim=data_fim)
-        fim = time.time() + min(20.0, timeout_ms / 1000.0)
+        fim = time.time() + min(25.0, timeout_ms / 1000.0)
         while time.time() < fim and not _matched():
-            if captured_auth["value"] and not collected:
+            if collected:
+                # rewrite pode ter falhado; se já temos pacotes no período, sai
                 break
             page.wait_for_timeout(400)
 
         matched = _matched()
+        if not matched and collected:
+            # Aceita o que a SPA trouxe (melhor que zero) se rewrite não casou período
+            logger.warning(
+                "[HISTORICO PAP] /vendas capturado fora do período pedido — usando pacotes da SPA."
+            )
+            matched = list(collected)
+
         if matched:
             for _ in range(max(0, max_paginas_ui - 1)):
                 nxt = None
@@ -1091,26 +1133,27 @@ def _coletar_vendas_via_rede_spa(
                         continue
                 if not nxt:
                     break
-                antes = len(_matched())
+                antes = len(_matched() or matched)
                 try:
                     _force_click(page, nxt)
                 except Exception:
                     break
                 page.wait_for_timeout(2000)
-                if len(_matched()) == antes:
+                agora = _matched() or list(collected)
+                if len(agora) == antes:
                     page.wait_for_timeout(2000)
-                if len(_matched()) == antes:
+                if len(_matched() or list(collected)) == antes:
                     break
-            return _matched()
+            return _matched() or list(collected)
 
-        packs = _reconsultar_se_possivel(
-            "Filtrar/UI não devolveu /vendas no período"
-            if not collected
-            else "SPA filtrou período diferente do pedido"
-        )
-        if packs:
-            return packs
-
+        # 3) Último recurso: NÃO reutilizar Authorization (anti-replay one-shot → jwt malformed).
+        # Só loga diagnóstico.
+        if captured_auth["value"]:
+            logger.warning(
+                "[HISTORICO PAP] Havia Authorization da SPA (len=%d) mas /vendas não disparou. "
+                "Não reutilizamos o token (anti-replay). Auth events ok; falta XHR /vendas.",
+                len(captured_auth["value"]),
+            )
         if not collected and erros:
             logger.warning(
                 "[HISTORICO PAP] Rede SPA sem sucesso em /vendas. Último erro: %s",
@@ -1128,10 +1171,6 @@ def _coletar_vendas_via_rede_spa(
                     pass
         try:
             page.remove_listener("request", _on_request)
-        except Exception:
-            pass
-        try:
-            page.remove_listener("response", _on_response)
         except Exception:
             pass
 
@@ -1499,89 +1538,43 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
                 total,
             )
 
-    # ─── PASSO 2: Fallback — Authorization cru da SPA (sem regenerar hash) ─────
+    # ─── PASSO 2: Fallback seguro — reload + Filtrar de novo (sem reusar Authorization) ─
     if not spa_ok:
-        origem_coleta = "api_auth_spa"
+        origem_coleta = "spa_rede_retry"
         logger.warning(
-            "[HISTORICO PAP] Rede SPA sem pacote /vendas no período — "
-            "capturando Authorization de qualquer pap-api e reconsultando."
+            "[HISTORICO PAP] Rede SPA sem pacote /vendas — retry: reload histórico + Filtrar "
+            "(sem reutilizar Authorization)."
         )
-        captured: dict[str, str] = {"auth": ""}
-
-        def _on_request(request):
-            try:
-                if not _url_eh_api_pap(request.url):
-                    return
-                auth = _authorization_de_request(request)
-                if auth:
-                    captured["auth"] = auth
-            except Exception:
-                pass
-
         try:
-            page.on("request", _on_request)
-            try:
-                # Recarrega o histórico para a SPA emitir requests autenticados
-                page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(3500)
-            except Exception as exc:
-                logger.warning("[HISTORICO PAP] goto histórico (fallback auth): %s", exc)
-            # Dispara Filtrar só para provocar XHR e pegar Authorization
-            try:
-                _tentar_clicar_filtrar(page, data_inicio=busca.data_inicio, data_fim=busca.data_fim)
-                page.wait_for_timeout(2500)
-            except Exception:
-                pass
-        finally:
-            try:
-                page.remove_listener("request", _on_request)
-            except Exception:
-                pass
+            page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2500)
+        except Exception as exc:
+            logger.warning("[HISTORICO PAP] goto histórico (retry): %s", exc)
 
-        if not captured["auth"]:
-            return False, (
-                "A SPA não disparou requests autenticados no Histórico PAP. "
-                "Alternativa: exporte o Histórico no PAP e envie o arquivo no site "
-                "(registrar exportação)."
-            )
-
-        logger.info(
-            "[HISTORICO PAP] Fallback com Authorization cru da SPA (len=%d).",
-            len(captured["auth"]),
+        respostas_spa = _coletar_vendas_via_rede_spa(
+            page,
+            data_inicio=busca.data_inicio,
+            data_fim=busca.data_fim,
+            timeout_ms=55000,
+            max_paginas_ui=12,
         )
-        fallback_ok = False
-        for tipo_alvo in (tipos or ["VENDA", "INTERESSE", "PRE_VENDA"]):
-            if _job_cancelado(busca_id):
-                break
-            aliases = TIPO_API_ALIASES.get(tipo_alvo, (tipo_alvo,))
-            for alias in aliases:
-                packs = _coletar_via_auth_capturado(
-                    page,
-                    authorization=captured["auth"],
-                    data_inicio=busca.data_inicio,
-                    data_fim=busca.data_fim,
-                    tipo_api=alias,
+        if respostas_spa:
+            spa_ok = True
+            for pack in respostas_spa:
+                lista, total = extrair_lista_api(pack.get("json"))
+                lista = lista or []
+                itens_brutos.extend([x for x in lista if isinstance(x, dict)])
+                logger.info(
+                    "[HISTORICO PAP] Pacote SPA /vendas (retry): +%d itens (total API=%s)",
+                    len(lista),
+                    total,
                 )
-                if not packs:
-                    continue
-                fallback_ok = True
-                for pack in packs:
-                    lista, total = extrair_lista_api(pack.get("json"))
-                    lista = lista or []
-                    itens_brutos.extend([x for x in lista if isinstance(x, dict)])
-                    logger.info(
-                        "[HISTORICO PAP] Fallback auth SPA %s: +%d itens (total=%s)",
-                        alias,
-                        len(lista),
-                        total,
-                    )
-                break
 
-        if not fallback_ok:
+        if not spa_ok:
             return False, (
-                "Nenhum pedido obtido: a SPA não retornou /vendas no período e o "
-                "fallback com Authorization capturado também falhou. "
-                "Alternativa estável: exportar no PAP e enviar o arquivo no site."
+                "Nenhum pedido obtido: a SPA não disparou /api/portal/vendas no Histórico. "
+                "Alternativa estável: exportar no PAP e enviar o arquivo no site "
+                "(registrar exportação)."
             )
 
     vistos = set()

@@ -261,7 +261,7 @@ class FunilHistoricoPapPedidosView(APIView):
 
 
 class FunilHistoricoPapImportarView(APIView):
-    """Dispara busca PAP de VENDAS e importa pedidos locais para o CRM."""
+    """Dispara busca PAP de VENDAS e/ou importa pedidos locais para o CRM."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -270,66 +270,113 @@ class FunilHistoricoPapImportarView(APIView):
 
         from datetime import timedelta
 
-        from crm_app.historico_pap_service import busca_em_andamento, criar_e_iniciar_busca
-        from crm_app.models import HistoricoPapPedido
+        from crm_app.historico_pap_service import busca_em_andamento, criar_e_iniciar_busca, serializar_busca
+        from crm_app.models import HistoricoPapBusca, HistoricoPapPedido
         from crm_app.services_sincronizacao import sincronizar_pedido_pap_para_venda
 
-        if busca_em_andamento():
-            return Response(
-                {"error": "Já existe uma busca no PAP em andamento. Aguarde terminar para importar."},
-                status=400,
-            )
+        data = request.data if isinstance(request.data, dict) else {}
+        apenas_sincronizar = bool(data.get("apenas_sincronizar") or data.get("somente_sync"))
+        busca_id = data.get("busca_id") or data.get("id")
 
-        busca_online_msg = "Busca online iniciada (pode levar 1 minuto)."
-        try:
-            periodo = request.data.get("periodo", "hoje")
-            hoje = date.today()
-            if periodo == "mes":
-                data_inicio = date(hoje.year, hoje.month, 1)
-            elif periodo == "semana":
-                data_inicio = hoje - timedelta(days=7)
-            elif periodo == "ontem":
-                data_inicio = hoje - timedelta(days=1)
+        def _sincronizar_locais(*, so_novos_da_busca=None):
+            if so_novos_da_busca:
+                numeros = [str(n) for n in (so_novos_da_busca or []) if n]
+                pedidos = list(
+                    HistoricoPapPedido.objects.filter(
+                        tipo_venda="VENDA",
+                        numero_pedido__in=numeros,
+                    ).order_by("-capturado_em")[:200]
+                )
             else:
-                data_inicio = hoje
+                pedidos = list(
+                    HistoricoPapPedido.objects.filter(tipo_venda="VENDA").order_by("-capturado_em")[:100]
+                )
 
-            _busca_id, err_busca = criar_e_iniciar_busca(
-                request.user,
-                data_inicio=data_inicio,
-                data_fim=hoje,
-                pdv="",
-                tipos=["VENDA"],
-                token_manual="",
+            sucessos = 0
+            falhas = 0
+            erros_msgs: list[str] = []
+            for p in pedidos:
+                try:
+                    res = sincronizar_pedido_pap_para_venda(p.id)
+                    if res.get("sucesso"):
+                        sucessos += 1
+                    else:
+                        msg = res.get("mensagem") or ""
+                        if "já existe" not in msg:
+                            falhas += 1
+                            erros_msgs.append(f"Pedido {p.numero_pedido}: {msg}")
+                except Exception as e:
+                    logger.error("Erro ao importar pedido %s: %s", p.id, e, exc_info=True)
+                    falhas += 1
+            return sucessos, falhas, erros_msgs
+
+        # Apenas sincroniza o que já está no banco (após busca concluir no front)
+        if apenas_sincronizar:
+            novos_numeros = None
+            if busca_id:
+                busca = HistoricoPapBusca.objects.filter(pk=busca_id).first()
+                if busca and busca.novos_numeros:
+                    novos_numeros = busca.novos_numeros
+            sucessos, falhas, erros_msgs = _sincronizar_locais(so_novos_da_busca=novos_numeros)
+            msg = f"{sucessos} novas vendas criadas a partir do histórico PAP."
+            if falhas:
+                msg += f" ({falhas} com erro)."
+            return Response(
+                {
+                    "sucesso": True,
+                    "mensagem": msg,
+                    "criadas": sucessos,
+                    "falhas": falhas,
+                    "erros": erros_msgs,
+                }
             )
-            if err_busca:
-                logger.warning("Busca online do PAP não iniciada: %s", err_busca)
-                busca_online_msg = f"Busca online não iniciada: {err_busca}"
-        except Exception as e:
-            logger.error("Erro ao iniciar busca online do PAP: %s", e, exc_info=True)
-            busca_online_msg = f"Busca online falhou ao iniciar: {e}"
 
-        pedidos = HistoricoPapPedido.objects.filter(tipo_venda="VENDA").order_by("-capturado_em")[:100]
+        if busca_em_andamento():
+            atual = busca_em_andamento()
+            return Response(
+                {
+                    "error": "Já existe uma busca no PAP em andamento. Aguarde terminar.",
+                    "busca_id": getattr(atual, "id", None),
+                    "status": serializar_busca(atual, em_andamento=True) if atual else None,
+                },
+                status=409,
+            )
 
-        sucessos = 0
-        falhas = 0
-        erros_msgs: list[str] = []
+        periodo = data.get("periodo", "hoje")
+        hoje = date.today()
+        if periodo == "mes":
+            data_inicio = date(hoje.year, hoje.month, 1)
+        elif periodo == "semana":
+            data_inicio = hoje - timedelta(days=7)
+        elif periodo == "ontem":
+            data_inicio = hoje - timedelta(days=1)
+        else:
+            data_inicio = hoje
 
-        for p in pedidos:
-            try:
-                res = sincronizar_pedido_pap_para_venda(p.id)
-                if res.get("sucesso"):
-                    sucessos += 1
-                else:
-                    msg = res.get("mensagem") or ""
-                    if "já existe" not in msg:
-                        falhas += 1
-                        erros_msgs.append(f"Pedido {p.numero_pedido}: {msg}")
-            except Exception as e:
-                logger.error("Erro ao importar pedido %s: %s", p.id, e, exc_info=True)
-                falhas += 1
+        busca_id_novo, err_busca = criar_e_iniciar_busca(
+            request.user,
+            data_inicio=data_inicio,
+            data_fim=hoje,
+            pdv="",
+            tipos=["VENDA"],
+            token_manual="",
+        )
+        if err_busca:
+            logger.warning("Busca online do PAP não iniciada: %s", err_busca)
+            return Response({"error": err_busca, "sucesso": False}, status=400)
 
-        msg_final = f"{busca_online_msg} Do banco local, {sucessos} novas vendas criadas."
-        if falhas > 0:
-            msg_final += f" ({falhas} com erro)."
-
-        return Response({"sucesso": True, "mensagem": msg_final, "erros": erros_msgs})
+        return Response(
+            {
+                "sucesso": True,
+                "em_andamento": True,
+                "busca_id": busca_id_novo,
+                "periodo": periodo,
+                "data_inicio": data_inicio.isoformat(),
+                "data_fim": hoje.isoformat(),
+                "mensagem": (
+                    "Busca no PAP iniciada. Aguarde a coleta pela SPA "
+                    "(pode levar 1–2 minutos)."
+                ),
+            },
+            status=202,
+        )
