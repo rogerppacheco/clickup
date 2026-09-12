@@ -1,7 +1,7 @@
 """
-Corrige Venda.plano a partir do payload do HistoricoPapPedido (nome + velocidade).
+Corrige Venda.plano e valor_plano_pap a partir do payload do HistoricoPapPedido.
 
-Usa o mesmo resolver_plano_pap do sync. Por padrão só simula (dry-run).
+Usa resolver_plano_pap (nome + velocidade + valor mensal). Por padrão só simula.
 
 Uso:
   python manage.py corrigir_plano_vendas_pap
@@ -12,6 +12,7 @@ Uso:
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -23,8 +24,17 @@ from crm_app.models import HistoricoPapPedido, Venda
 from crm_app.services_sincronizacao import resolver_plano_pap
 
 
+def _decimal_ou_none(valor) -> Decimal | None:
+    if valor is None or valor == "":
+        return None
+    try:
+        return Decimal(str(valor)).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
 class Command(BaseCommand):
-    help = "Rematch Venda.plano com Plano+Velocidade do histórico PAP."
+    help = "Rematch Venda.plano e valor_plano_pap com dados do histórico PAP."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -53,7 +63,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--incluir-iguais",
             action="store_true",
-            help="Lista também vendas cujo plano já está correto",
+            help="Lista também vendas já alinhadas",
         )
 
     def handle(self, *args, **options):
@@ -90,7 +100,7 @@ class Command(BaseCommand):
         }
 
         self.stdout.write(self.style.WARNING("=" * 60))
-        self.stdout.write(self.style.WARNING("Corrigir plano das vendas via histórico PAP"))
+        self.stdout.write(self.style.WARNING("Corrigir plano/valor das vendas via histórico PAP"))
         self.stdout.write(self.style.WARNING("=" * 60))
         self.stdout.write(f"Vendas candidatas: {total}")
         self.stdout.write(f"Modo: {'GRAVAR' if confirmar else 'DRY-RUN'}")
@@ -108,9 +118,11 @@ class Command(BaseCommand):
                 continue
 
             mapped = map_pedido_api(hist.payload, hist.tipo_venda)
+            valor_pap = _decimal_ou_none(mapped.get("valor_mensal"))
             plano_novo = resolver_plano_pap(
                 mapped.get("plano") or "",
                 mapped.get("velocidade") or "",
+                mapped.get("valor_mensal"),
             )
             if not plano_novo:
                 sem_match += 1
@@ -121,27 +133,34 @@ class Command(BaseCommand):
                 )
                 continue
 
-            atual_id = venda.plano_id
-            if atual_id == plano_novo.id:
+            valor_atual = _decimal_ou_none(venda.valor_plano_pap)
+            plano_mudou = venda.plano_id != plano_novo.id
+            valor_mudou = valor_pap is not None and valor_atual != valor_pap
+
+            if not plano_mudou and not valor_mudou:
                 iguais += 1
                 if incluir_iguais:
                     exemplos.append(
-                        f"  [ok] pedido={venda.pedido_pap} plano={plano_novo.nome}"
+                        f"  [ok] pedido={venda.pedido_pap} plano={plano_novo.nome} valor={valor_pap}"
                     )
                 continue
 
             atual_nome = venda.plano.nome if venda.plano_id else None
             linha = (
                 f"  venda={venda.id} pedido={venda.pedido_pap} "
-                f"{atual_nome!r} -> {plano_novo.nome!r} "
+                f"plano {atual_nome!r} -> {plano_novo.nome!r} | "
+                f"valor {valor_atual} -> {valor_pap} "
                 f"(PAP: {mapped.get('plano')} / {mapped.get('velocidade')})"
             )
             exemplos.append(linha)
             alteradas += 1
 
             if confirmar:
+                updates = {"plano_id": plano_novo.id}
+                if valor_pap is not None:
+                    updates["valor_plano_pap"] = valor_pap
                 with transaction.atomic():
-                    Venda.objects.filter(id=venda.id).update(plano_id=plano_novo.id)
+                    Venda.objects.filter(id=venda.id).update(**updates)
 
         for linha in exemplos[:80]:
             self.stdout.write(linha)
@@ -158,7 +177,9 @@ class Command(BaseCommand):
                 "Dry-run concluído. Rode de novo com --confirmar para gravar."
             ))
         elif confirmar:
-            self.stdout.write(self.style.SUCCESS(f"Gravadas {alteradas} correções de plano."))
+            self.stdout.write(self.style.SUCCESS(
+                f"Gravadas {alteradas} correções de plano/valor."
+            ))
 
     def _parse_date(self, value: str, *, inicio: bool):
         value = (value or "").strip()

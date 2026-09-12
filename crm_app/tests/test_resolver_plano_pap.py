@@ -36,10 +36,13 @@ class ResolverPlanoPapTest(TestCase):
             nome="NIO FIBRA SUPER 700MB", ativo=False, valor=Decimal("90"), operadora=op
         )
         Plano.objects.create(
-            nome="NIO FIBRA SUPER 800MB", ativo=True, valor=Decimal("100"), operadora=op
+            nome="NIO FIBRA SUPER 800MB", ativo=True, valor=Decimal("135"), operadora=op
         )
         Plano.objects.create(
-            nome="NIO FIBRA ULTRA 1GB", ativo=True, valor=Decimal("75"), operadora=op
+            nome="NIO FIBRA ULTRA 1GB", ativo=True, valor=Decimal("160"), operadora=op
+        )
+        Plano.objects.create(
+            nome="NIO FIBRA ULTRA 1GB (SEM MESH)", ativo=True, valor=Decimal("150"), operadora=op
         )
 
     def test_essencial_600_nao_pega_500(self):
@@ -52,7 +55,23 @@ class ResolverPlanoPapTest(TestCase):
         self.assertIsNotNone(p)
         self.assertIn("800", p.nome)
 
-    def test_ultra_1giga(self):
-        p = resolver_plano_pap("Nio Fibra Ultra - Especial", "1 Giga")
+    def test_ultra_especial_vai_para_mesh(self):
+        p = resolver_plano_pap("Nio Fibra Ultra - Especial", "1 Giga", 75)
         self.assertIsNotNone(p)
-        self.assertIn("1GB", p.nome.replace(" ", ""))
+        self.assertEqual(p.nome, "NIO FIBRA ULTRA 1GB")
+        self.assertNotIn("SEM MESH", p.nome)
+
+    def test_ultra_150_vai_para_sem_mesh(self):
+        p = resolver_plano_pap("Nio Fibra Ultra", "1 Giga", 150)
+        self.assertIsNotNone(p)
+        self.assertIn("SEM MESH", p.nome)
+
+    def test_ultra_135_vai_para_sem_mesh(self):
+        p = resolver_plano_pap("Nio Fibra Ultra", "1 Giga", 135)
+        self.assertIsNotNone(p)
+        self.assertIn("SEM MESH", p.nome)
+
+    def test_ultra_sem_valor_default_sem_mesh(self):
+        p = resolver_plano_pap("Nio Fibra Ultra", "1 Giga")
+        self.assertIsNotNone(p)
+        self.assertIn("SEM MESH", p.nome)

@@ -75,12 +75,61 @@ def _velocidade_mb_pap(velocidade: str, nome_plano: str = "") -> int | None:
     return num
 
 
-def resolver_plano_pap(nome_plano: str, velocidade: str = "") -> Plano | None:
+def _parse_valor_mensal_pap(valor) -> float | None:
+    if valor is None or valor == "":
+        return None
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    s = str(valor).strip()
+    if not s:
+        return None
+    s = re.sub(r"[^\d,.\-]", "", s)
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _escolher_plano_1gb(candidatos: list[Plano], nome_plano: str, valor_mensal=None) -> Plano | None:
     """
-    Casa plano CRM com nome + velocidade do PAP.
+    Distingue ULTRA 1GB (mesh ~R$160) de ULTRA 1GB (SEM MESH ~R$150).
+
+    - Nome com ESPECIAL → mesh (promo do plano full; não é sem mesh).
+    - Nome/código com SEM MESH → sem mesh.
+    - Valor mensal PAP → candidato com valor de catálogo mais próximo.
+    - Default do Ultra comum no PAP → SEM MESH (legado OSAB).
+    """
+    if not candidatos:
+        return None
+
+    nome_n = _normalizar_texto_plano(nome_plano)
+    com_mesh = [p for p in candidatos if "SEM MESH" not in _normalizar_texto_plano(p.nome)]
+    sem_mesh = [p for p in candidatos if "SEM MESH" in _normalizar_texto_plano(p.nome)]
+
+    if "ESPECIAL" in nome_n:
+        return (com_mesh or candidatos)[0]
+    if "SEM MESH" in nome_n:
+        return (sem_mesh or candidatos)[0]
+
+    valor = _parse_valor_mensal_pap(valor_mensal)
+    if valor is not None and len(candidatos) > 1:
+        return min(candidatos, key=lambda p: abs(float(p.valor) - valor))
+
+    # Ultra regular no PAP costuma ser a oferta SEM MESH (150 / 135), não o mesh 160.
+    return (sem_mesh or com_mesh or candidatos)[0]
+
+
+def resolver_plano_pap(nome_plano: str, velocidade: str = "", valor_mensal=None) -> Plano | None:
+    """
+    Casa plano CRM com nome + velocidade (+ valor mensal) do PAP.
 
     Bug antigo: filtrava só por nome ('Nio Fibra Essencial') e pegava o primeiro
     do catálogo (500MB) em vez do 600MB indicado em Velocidade.
+    1GB: não preferir sempre o mesh — SEM MESH (150) é oferta distinta.
     """
     familia = _familia_plano_pap(nome_plano)
     vel_mb = _velocidade_mb_pap(velocidade, nome_plano)
@@ -93,17 +142,14 @@ def resolver_plano_pap(nome_plano: str, velocidade: str = "") -> Plano | None:
 
     if vel_mb:
         if vel_mb >= 1000:
-            candidatos = list(qs.filter(Q(nome__icontains="1GB") | Q(nome__icontains="1 GB") | Q(nome__icontains="1000")))
-            # Preferir ULTRA 1GB simples (sem 'SEM MESH') quando houver
-            if candidatos:
-                simples = [p for p in candidatos if "SEM MESH" not in (p.nome or "").upper()]
-                return (simples or candidatos)[0]
-        else:
-            # Aceita 600MB / 600 MB / 600MEGA
-            for p in qs:
-                n = _normalizar_texto_plano(p.nome)
-                if re.search(rf"\b{vel_mb}\s*(MB|MEGA)?\b", n) or f"{vel_mb}MB" in n.replace(" ", ""):
-                    return p
+            candidatos = list(
+                qs.filter(Q(nome__icontains="1GB") | Q(nome__icontains="1 GB") | Q(nome__icontains="1000"))
+            )
+            return _escolher_plano_1gb(candidatos, nome_plano, valor_mensal)
+        for p in qs:
+            n = _normalizar_texto_plano(p.nome)
+            if re.search(rf"\b{vel_mb}\s*(MB|MEGA)?\b", n) or f"{vel_mb}MB" in n.replace(" ", ""):
+                return p
 
     # Fallback: familia ativa; evita planos legados inativos (500/700)
     return qs.order_by("id").first() if familia else None
@@ -165,10 +211,11 @@ def sincronizar_pedido_pap_para_venda(pedido_id: int) -> dict:
         # Status inicial da Esteira/Tratamento
         status_tratamento = StatusCRM.objects.filter(nome="SEM TRATAMENTO", tipo="Tratamento").first()
 
-        # Match de Plano (nome + velocidade) e Forma de Pagamento
+        # Match de Plano (nome + velocidade + valor mensal) e Forma de Pagamento
         plano_obj = resolver_plano_pap(
             dados_mapeados.get("plano") or "",
             dados_mapeados.get("velocidade") or "",
+            dados_mapeados.get("valor_mensal"),
         )
 
         forma_pgto_obj = None
