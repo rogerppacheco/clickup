@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from datetime import datetime
 import re
@@ -22,6 +23,91 @@ def _somente_numeros(valor: str) -> str:
     if not valor:
         return ""
     return re.sub(r"\D", "", str(valor))
+
+
+def _normalizar_texto_plano(valor: str) -> str:
+    t = (valor or "").strip().upper()
+    t = (
+        t.replace("Á", "A")
+        .replace("À", "A")
+        .replace("Ã", "A")
+        .replace("Â", "A")
+        .replace("É", "E")
+        .replace("Ê", "E")
+        .replace("Í", "I")
+        .replace("Ó", "O")
+        .replace("Ô", "O")
+        .replace("Õ", "O")
+        .replace("Ú", "U")
+        .replace("Ç", "C")
+    )
+    return re.sub(r"\s+", " ", t)
+
+
+def _familia_plano_pap(nome_plano: str) -> str:
+    n = _normalizar_texto_plano(nome_plano)
+    if "ULTRA" in n:
+        return "ULTRA"
+    if "SUPER" in n:
+        return "SUPER"
+    if "ESSENCIAL" in n:
+        return "ESSENCIAL"
+    return ""
+
+
+def _velocidade_mb_pap(velocidade: str, nome_plano: str = "") -> int | None:
+    """Extrai MB do campo velocidade PAP (ex.: '600 Mega', '1 Giga')."""
+    blob = _normalizar_texto_plano(f"{velocidade} {nome_plano}")
+    if not blob.strip():
+        return None
+    if "1 GIGA" in blob or "1GB" in blob or re.search(r"\b1000\b", blob):
+        return 1000
+    m = re.search(r"(\d+)\s*(GIGA|GB|MEGA|MB)", blob)
+    if not m:
+        m = re.search(r"\b(500|600|700|800|1000)\b", blob)
+        if m:
+            return int(m.group(1))
+        return None
+    num = int(m.group(1))
+    unidade = m.group(2)
+    if unidade in ("GIGA", "GB"):
+        return num * 1000 if num < 100 else num
+    return num
+
+
+def resolver_plano_pap(nome_plano: str, velocidade: str = "") -> Plano | None:
+    """
+    Casa plano CRM com nome + velocidade do PAP.
+
+    Bug antigo: filtrava só por nome ('Nio Fibra Essencial') e pegava o primeiro
+    do catálogo (500MB) em vez do 600MB indicado em Velocidade.
+    """
+    familia = _familia_plano_pap(nome_plano)
+    vel_mb = _velocidade_mb_pap(velocidade, nome_plano)
+    if not familia and not vel_mb:
+        return None
+
+    qs = Plano.objects.filter(ativo=True)
+    if familia:
+        qs = qs.filter(nome__icontains=familia)
+
+    if vel_mb:
+        if vel_mb >= 1000:
+            candidatos = list(qs.filter(Q(nome__icontains="1GB") | Q(nome__icontains="1 GB") | Q(nome__icontains="1000")))
+            # Preferir ULTRA 1GB simples (sem 'SEM MESH') quando houver
+            if candidatos:
+                simples = [p for p in candidatos if "SEM MESH" not in (p.nome or "").upper()]
+                return (simples or candidatos)[0]
+        else:
+            # Aceita 600MB / 600 MB / 600MEGA
+            for p in qs:
+                n = _normalizar_texto_plano(p.nome)
+                if re.search(rf"\b{vel_mb}\s*(MB|MEGA)?\b", n) or f"{vel_mb}MB" in n.replace(" ", ""):
+                    return p
+
+    # Fallback: familia ativa; evita planos legados inativos (500/700)
+    return qs.order_by("id").first() if familia else None
+
 
 def sincronizar_pedido_pap_para_venda(pedido_id: int) -> dict:
     """
@@ -79,11 +165,11 @@ def sincronizar_pedido_pap_para_venda(pedido_id: int) -> dict:
         # Status inicial da Esteira/Tratamento
         status_tratamento = StatusCRM.objects.filter(nome="SEM TRATAMENTO", tipo="Tratamento").first()
 
-        # Match de Plano e Forma de Pagamento (Best Effort)
-        plano_obj = None
-        nome_plano_pap = dados_mapeados.get("plano")
-        if nome_plano_pap:
-            plano_obj = Plano.objects.filter(nome__icontains=nome_plano_pap.strip()).first()
+        # Match de Plano (nome + velocidade) e Forma de Pagamento
+        plano_obj = resolver_plano_pap(
+            dados_mapeados.get("plano") or "",
+            dados_mapeados.get("velocidade") or "",
+        )
 
         forma_pgto_obj = None
         forma_pap = dados_mapeados.get("forma_pagamento")
