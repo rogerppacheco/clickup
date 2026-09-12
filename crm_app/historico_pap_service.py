@@ -776,104 +776,406 @@ def _coletar_via_auth_capturado(
     return packs
 
 
-def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim: date | None = None) -> None:
-    """Preenche datas no filtro do Histórico (React/Ant) para a SPA disparar /vendas.
+def _escolher_dia_calendario_ant(page, dia: date) -> bool:
+    """Clica o dia no dropdown Ant Design aberto (title=YYYY-MM-DD)."""
+    titulo = dia.isoformat()
+    seletores = [
+        f'.ant-picker-dropdown:not(.ant-picker-dropdown-hidden) td[title="{titulo}"] .ant-picker-cell-inner',
+        f'.ant-picker-dropdown:not(.ant-picker-dropdown-hidden) td[title="{titulo}"]',
+        f'.ant-picker-dropdown td[title="{titulo}"] .ant-picker-cell-inner',
+        f'td[title="{titulo}"] .ant-picker-cell-inner',
+    ]
+    for sel in seletores:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() == 0:
+                continue
+            loc.click(timeout=2500, force=True)
+            page.wait_for_timeout(350)
+            return True
+        except Exception:
+            continue
+    # Fallback: clica o número do dia na célula visível do mês
+    try:
+        day_txt = str(dia.day)
+        loc = page.locator(
+            ".ant-picker-dropdown:not(.ant-picker-dropdown-hidden) "
+            ".ant-picker-cell-in-view:not(.ant-picker-cell-disabled) "
+            f".ant-picker-cell-inner:text-is('{day_txt}')"
+        ).first
+        if loc.count():
+            loc.click(timeout=2500, force=True)
+            page.wait_for_timeout(350)
+            return True
+    except Exception:
+        pass
+    return False
 
-    Não depende só de offsetParent (drawer Ant às vezes esconde inputs).
-    O período pedido ainda é garantido via route.fetch na interceptação de /vendas.
+
+def _interagir_range_picker_ant(page, data_inicio: date, data_fim: date) -> bool:
     """
+    Interação real no RangePicker Ant Design.
+
+    O botão Filtrar só habilita depois de mexer nas datas pela UI (calendário),
+    não basta setar value via JS.
+    """
+    if not page:
+        return False
+
+    # Garante "movimentação": se ini==fim==hoje, escolhe ontem e depois hoje no fim
+    # para o React registrar change (mesmo período efetivo pode ser hoje→hoje).
+    pick_ini = data_inicio
+    pick_fim = data_fim
+    if data_inicio == data_fim:
+        # Abre De, escolhe a data; abre Até, escolhe de novo (segundo clique no range)
+        pass
+
+    pickers = page.locator(
+        ".ant-drawer-open .ant-picker, .ant-drawer-open .ant-picker-range, "
+        ".ant-picker-range, .ant-picker"
+    )
+    inputs = page.locator(
+        ".ant-drawer-open .ant-picker-input input, "
+        ".ant-picker-input input, "
+        "input[placeholder*='De' i], input[placeholder*='Até' i], "
+        "input[placeholder*='Data' i]"
+    )
+
+    # 1) Clica no primeiro input (De)
+    try:
+        if inputs.count() > 0:
+            inputs.nth(0).click(timeout=3000, force=True)
+        elif pickers.count() > 0:
+            pickers.first.click(timeout=3000, force=True)
+        else:
+            logger.warning("[HISTORICO PAP] Nenhum ant-picker encontrado para datas.")
+            return False
+    except Exception as exc:
+        logger.warning("[HISTORICO PAP] Falha ao abrir picker De: %s", exc)
+        return False
+
+    page.wait_for_timeout(500)
+    try:
+        page.wait_for_selector(
+            ".ant-picker-dropdown:not(.ant-picker-dropdown-hidden), .ant-picker-panel",
+            timeout=5000,
+        )
+    except Exception:
+        logger.warning("[HISTORICO PAP] Dropdown do calendário não abriu (De).")
+
+    ok_ini = _escolher_dia_calendario_ant(page, pick_ini)
+    logger.info("[HISTORICO PAP] Calendário De %s → %s", pick_ini, ok_ini)
+    page.wait_for_timeout(400)
+
+    # 2) Segundo clique (Até) — range picker costuma abrir o 2º painel sozinho
+    try:
+        if inputs.count() > 1:
+            inputs.nth(1).click(timeout=2500, force=True)
+            page.wait_for_timeout(400)
+    except Exception:
+        pass
+
+    ok_fim = _escolher_dia_calendario_ant(page, pick_fim)
+    logger.info("[HISTORICO PAP] Calendário Até %s → %s", pick_fim, ok_fim)
+    page.wait_for_timeout(400)
+
+    # Fecha só o popup do calendário (nunca Escape — em MUI fecha o drawer)
+    try:
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(200)
+    except Exception:
+        pass
+    _fechar_apenas_calendario(page)
+
+    return bool(ok_ini or ok_fim)
+
+
+def _aguardar_filtrar_habilitado(page, timeout_ms: int = 10000) -> bool:
+    """Espera button.btn-filters-new / Filtrar ficar habilitado no drawer MUI."""
+    fim = time.time() + (timeout_ms / 1000.0)
+    while time.time() < fim:
+        try:
+            enabled = page.evaluate(
+                """() => {
+                    const root = document.querySelector('.MuiDrawer-root, .ant-drawer-open, [role="dialog"]') || document;
+                    const candidates = [
+                        ...root.querySelectorAll('button.btn-filters-new'),
+                        ...root.querySelectorAll('button'),
+                    ];
+                    for (const b of candidates) {
+                        const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                        if (t === 'filtros' || t === 'filtro') continue;
+                        const isFiltrar = b.classList.contains('btn-filters-new')
+                            || t === 'filtrar' || t.includes('filtrar');
+                        if (!isFiltrar) continue;
+                        const disabled = b.disabled
+                            || b.getAttribute('disabled') != null
+                            || b.classList.contains('Mui-disabled')
+                            || b.classList.contains('ant-btn-disabled')
+                            || b.getAttribute('aria-disabled') === 'true';
+                        if (!disabled) return true;
+                    }
+                    return false;
+                }"""
+            )
+            if enabled:
+                logger.info("[HISTORICO PAP] Botão Filtrar habilitado.")
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(300)
+    logger.warning("[HISTORICO PAP] Filtrar continuou desabilitado após mexer nas datas.")
+    return False
+
+
+def _clicar_dia_calendario_aberto(page, dia: date) -> bool:
+    """Clica o dia no popup de calendário aberto (MUI Pickers ou Ant Design)."""
+    day_num = str(dia.day)
+    titulo = dia.isoformat()  # YYYY-MM-DD
+    # Títulos/labels comuns em pt-BR
+    seletores = [
+        # Ant Design
+        f'.ant-picker-dropdown:not(.ant-picker-dropdown-hidden) td[title="{titulo}"] .ant-picker-cell-inner',
+        f'.ant-picker-dropdown:not(.ant-picker-dropdown-hidden) .ant-picker-cell-in-view:not(.ant-picker-cell-disabled) .ant-picker-cell-inner:text-is("{day_num}")',
+        f'.ant-picker-cell-in-view:not(.ant-picker-cell-disabled) .ant-picker-cell-inner:text-is("{day_num}")',
+        # Material-UI Pickers (popover)
+        f'.MuiPopover-root button.MuiPickersDay-day:not(.MuiPickersDay-dayDisabled):text-is("{day_num}")',
+        f'.MuiPopover-root button.MuiPickersDay-root:not(.Mui-disabled):text-is("{day_num}")',
+        f'.MuiPickersBasePicker-container button.MuiPickersDay-day:not(.MuiPickersDay-dayDisabled):text-is("{day_num}")',
+        f'.MuiPickersPopper-root button:text-is("{day_num}")',
+        f'[role="presentation"] button.MuiPickersDay-day:text-is("{day_num}")',
+        f'[role="dialog"] button.MuiPickersDay-day:text-is("{day_num}")',
+    ]
+    for sel in seletores:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() == 0:
+                continue
+            loc.click(timeout=2500, force=True)
+            page.wait_for_timeout(400)
+            logger.info("[HISTORICO PAP] Dia %s clicado via %s", day_num, sel[:80])
+            return True
+        except Exception:
+            continue
+
+    # Fallback JS: botão/célula com texto exato do dia no popup visível
+    try:
+        ok = page.evaluate(
+            """(dayNum) => {
+                const roots = [
+                    ...document.querySelectorAll(
+                        '.ant-picker-dropdown:not(.ant-picker-dropdown-hidden), .MuiPopover-root, .MuiPickersPopper-root'
+                    ),
+                ];
+                const scope = roots.length ? roots : [];
+                for (const root of scope) {
+                    const nodes = [
+                        ...root.querySelectorAll(
+                            'button, .ant-picker-cell-inner, td, [role="gridcell"]'
+                        ),
+                    ];
+                    for (const el of nodes) {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        if (t !== String(dayNum)) continue;
+                        const disabled = el.disabled
+                            || el.classList.contains('Mui-disabled')
+                            || el.classList.contains('MuiPickersDay-dayDisabled')
+                            || el.classList.contains('ant-picker-cell-disabled')
+                            || (el.closest && el.closest('.ant-picker-cell-disabled'));
+                        if (disabled) continue;
+                        // Evita cabeçalho "4ª" etc — só dígitos
+                        if (!/^\\d{1,2}$/.test(t)) continue;
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            day_num,
+        )
+        if ok:
+            logger.info("[HISTORICO PAP] Dia %s clicado via JS no calendário.", day_num)
+            page.wait_for_timeout(400)
+            return True
+    except Exception as exc:
+        logger.debug("[HISTORICO PAP] clique dia JS: %s", exc)
+    return False
+
+
+def _navegar_mes_calendario_se_preciso(page, alvo: date) -> None:
+    """Se o calendário aberto estiver em outro mês, tenta ir até o mês alvo (poucos cliques)."""
+    try:
+        # Até 14 cliques de "mês anterior/próximo" — suficiente para +/- 1 ano
+        for _ in range(14):
+            info = page.evaluate(
+                """() => {
+                    const root = document.querySelector(
+                        '.ant-picker-dropdown:not(.ant-picker-dropdown-hidden), .MuiPopover-root, .MuiPickersPopper-root'
+                    ) || document;
+                    const header = root.querySelector(
+                        '.ant-picker-header-view, .MuiPickersCalendarHeader-switchHeader, .MuiPickersCalendarHeader-label, .MuiPickersCalendarHeader-transitionContainer'
+                    );
+                    return (header && (header.innerText || header.textContent) || '').trim();
+                }"""
+            )
+            txt = (info or "").lower()
+            # Se já menciona o mês/ano alvo, ok
+            meses = {
+                1: "jan", 2: "fev", 3: "mar", 4: "abr", 5: "mai", 6: "jun",
+                7: "jul", 8: "ago", 9: "set", 10: "out", 11: "nov", 12: "dez",
+            }
+            alvo_m = meses.get(alvo.month, "")
+            if alvo_m and alvo_m in txt and str(alvo.year) in txt:
+                return
+            # Heurística: se header tem mês posterior, volta; senão avança
+            next_btn = page.locator(
+                ".ant-picker-header-next-btn, .MuiPickersCalendarHeader-iconButton:last-of-type, "
+                "button[aria-label*='next' i], button[aria-label*='próximo' i]"
+            ).first
+            prev_btn = page.locator(
+                ".ant-picker-header-prev-btn, .MuiPickersCalendarHeader-iconButton:first-of-type, "
+                "button[aria-label*='previous' i], button[aria-label*='anterior' i]"
+            ).first
+            # Preferir próximo se o ano/mês parece anterior
+            try:
+                if str(alvo.year) in txt and alvo_m and alvo_m not in txt:
+                    # mês errado no mesmo ano — tenta next
+                    if next_btn.count():
+                        next_btn.click(timeout=1000, force=True)
+                        page.wait_for_timeout(250)
+                        continue
+                if next_btn.count():
+                    next_btn.click(timeout=1000, force=True)
+                    page.wait_for_timeout(250)
+                elif prev_btn.count():
+                    prev_btn.click(timeout=1000, force=True)
+                    page.wait_for_timeout(250)
+                else:
+                    return
+            except Exception:
+                return
+    except Exception:
+        return
+
+
+def _interagir_datas_mui_drawer(page, data_inicio: date, data_fim: date) -> bool:
+    """
+    Abre o calendário (MUI/Ant) nos campos De/Até e CLICA o dia escolhido.
+
+    Só abrir o calendário NÃO habilita Filtrar — é preciso clicar a célula do dia.
+    """
+    if not page:
+        return False
+
+    try:
+        loc = page.locator(
+            ".MuiDrawer-root .MuiInputBase-adornedEnd input.MuiInputBase-input, "
+            ".MuiDrawer-root input.MuiOutlinedInput-inputAdornedEnd, "
+            ".drawer .MuiInputBase-adornedEnd input, "
+            ".ant-drawer-open .ant-picker-input input"
+        )
+        n = loc.count()
+        logger.info("[HISTORICO PAP] Campos data no drawer: %d (periodo %s→%s)", n, data_inicio, data_fim)
+        if n < 1:
+            return False
+
+        def _abrir_e_escolher(idx: int, dia: date) -> bool:
+            item = loc.nth(idx)
+            # Fecha só o calendário anterior (NUNCA Escape — fecha o drawer MUI)
+            _fechar_apenas_calendario(page)
+
+            opened = False
+            # 1) Clique JS no input
+            try:
+                handle = item.element_handle()
+                if handle:
+                    page.evaluate("(el) => el.focus(); el.click();", handle)
+                    opened = True
+                    page.wait_for_timeout(450)
+            except Exception:
+                opened = False
+
+            # 2) Playwright click no input (sem force primeiro)
+            if not opened:
+                try:
+                    item.click(timeout=2500)
+                    opened = True
+                    page.wait_for_timeout(450)
+                except Exception:
+                    try:
+                        item.click(timeout=2000, force=True)
+                        opened = True
+                        page.wait_for_timeout(450)
+                    except Exception:
+                        opened = False
+
+            # 3) Ícone do calendário
+            if not opened:
+                try:
+                    adorn = page.locator(
+                        ".MuiDrawer-root .MuiInputBase-adornedEnd"
+                    ).nth(idx).locator("button").first
+                    adorn.click(timeout=2500)
+                    opened = True
+                    page.wait_for_timeout(450)
+                except Exception as exc:
+                    logger.warning(
+                        "[HISTORICO PAP] Não abriu calendário idx=%s: %s", idx, exc
+                    )
+                    return False
+
+            try:
+                page.wait_for_selector(
+                    ".MuiPopover-root, .MuiPickersPopper-root, "
+                    ".ant-picker-dropdown:not(.ant-picker-dropdown-hidden), "
+                    "button.MuiPickersDay-day, button.MuiPickersDay-root",
+                    timeout=5000,
+                )
+            except Exception:
+                logger.warning("[HISTORICO PAP] Popup calendário não apareceu (idx=%s).", idx)
+
+            _navegar_mes_calendario_se_preciso(page, dia)
+            ok = _clicar_dia_calendario_aberto(page, dia)
+            if not ok:
+                try:
+                    page.locator(
+                        f".MuiPopover-root button:text-is('{dia.day}'), "
+                        f".MuiPickersPopper-root button:text-is('{dia.day}')"
+                    ).first.click(timeout=2000)
+                    ok = True
+                    page.wait_for_timeout(350)
+                except Exception:
+                    ok = False
+            logger.info("[HISTORICO PAP] Calendário idx=%s dia=%s ok=%s", idx, dia, ok)
+            page.wait_for_timeout(300)
+            _fechar_apenas_calendario(page)
+            return ok
+
+        ok_de = _abrir_e_escolher(0, data_inicio)
+        ok_ate = True
+        if n > 1:
+            ok_ate = _abrir_e_escolher(1, data_fim)
+        else:
+            ok_ate = _clicar_dia_calendario_aberto(page, data_fim) or ok_de
+
+        _fechar_apenas_calendario(page)
+        return bool(ok_de and ok_ate)
+    except Exception as exc:
+        logger.warning("[HISTORICO PAP] Interação calendário De/Até falhou: %s", exc)
+        return False
+
+
+def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim: date | None = None) -> None:
+    """Mexer nas datas pela UI (MUI primeiro; Ant fallback) para habilitar Filtrar."""
     if not page:
         return
     ini = data_inicio or date.today()
     fim = data_fim or date.today()
-    ini_br = ini.strftime("%d/%m/%Y")
-    fim_br = fim.strftime("%d/%m/%Y")
-    try:
-        preenchidos = page.evaluate(
-            """([iniIso, fimIso, iniBr, fimBr]) => {
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value'
-                ).set;
-                const roots = [
-                    ...document.querySelectorAll('.ant-drawer-open, .ant-drawer-content-wrapper, .ant-modal-open, [class*="drawer"]'),
-                    document.body,
-                ];
-                const seen = new Set();
-                const inputs = [];
-                roots.forEach((root) => {
-                    root.querySelectorAll('input').forEach((i) => {
-                        if (seen.has(i)) return;
-                        seen.add(i);
-                        inputs.push(i);
-                    });
-                });
-                let count = 0;
-                const vals = [];
-                inputs.forEach((i) => {
-                    if (i.disabled) return;
-                    const ph = (i.placeholder || '').toLowerCase();
-                    const name = ((i.name || '') + ' ' + (i.id || '') + ' ' + (i.className || '')).toLowerCase();
-                    const inPicker = !!(i.closest && i.closest('.ant-picker'));
-                    const isData = i.type === 'date' || inPicker || ph.includes('data') || ph.includes('início')
-                        || ph.includes('inicio') || ph.includes('fim') || name.includes('data')
-                        || name.includes('date') || name.includes('picker');
-                    if (!isData && i.type !== 'text') return;
-                    // No drawer, preenche pickers/datas; fora do drawer só type=date
-                    if (!isData && !i.closest('.ant-drawer-open') && !i.closest('.ant-picker')) return;
-                    let val;
-                    if (i.type === 'date') {
-                        val = (count === 0) ? iniIso : fimIso;
-                    } else if (ph.includes('fim') || name.includes('fim') || name.includes('end') || count > 0) {
-                        val = fimBr;
-                    } else {
-                        val = iniBr;
-                    }
-                    const tracker = i._valueTracker;
-                    if (tracker) tracker.setValue('');
-                    setter.call(i, val);
-                    i.dispatchEvent(new Event('input', { bubbles: true }));
-                    i.dispatchEvent(new Event('change', { bubbles: true }));
-                    i.dispatchEvent(new Event('blur', { bubbles: true }));
-                    vals.push(val);
-                    count += 1;
-                });
-                return { count, vals };
-            }""",
-            [ini.isoformat(), fim.isoformat(), ini_br, fim_br],
-        )
-        logger.info(
-            "[HISTORICO PAP] Datas filtro SPA pedidas %s→%s; inputs tocados=%s",
-            ini,
-            fim,
-            preenchidos,
-        )
-        page.wait_for_timeout(400)
-    except Exception as exc:
-        logger.debug("[HISTORICO PAP] Falha ao preencher datas SPA (JS): %s", exc)
 
-    # Reforço via digitação Playwright (Ant Design RangePicker)
-    try:
-        loc = page.locator(
-            '.ant-drawer-open .ant-picker-input input, .ant-picker-input input, '
-            'input[placeholder*="Data" i], input[placeholder*="data"], input[type="date"]'
-        )
-        n = loc.count()
-        for idx in range(min(n, 4)):
-            item = loc.nth(idx)
-            try:
-                tipo = (item.get_attribute("type") or "").lower()
-                val = ini.isoformat() if tipo == "date" else (ini_br if idx % 2 == 0 else fim_br)
-                if tipo == "date" and idx % 2 == 1:
-                    val = fim.isoformat()
-                item.click(timeout=1500, force=True)
-                item.fill(val, force=True)
-                item.press("Enter")
-                item.press("Tab")
-            except Exception:
-                continue
-        page.wait_for_timeout(300)
-    except Exception as exc:
-        logger.debug("[HISTORICO PAP] Falha ao digitar datas SPA: %s", exc)
+    ok = _interagir_datas_mui_drawer(page, ini, fim)
+    if not ok:
+        ok = _interagir_range_picker_ant(page, ini, fim)
+    logger.info("[HISTORICO PAP] Interação datas %s→%s ok=%s", ini, fim, ok)
 
 
 def _disparar_vendas_via_spa_js(page, *, data_inicio: date, data_fim: date) -> dict | None:
@@ -979,84 +1281,275 @@ def _disparar_vendas_via_spa_js(page, *, data_inicio: date, data_fim: date) -> d
         return None
 
 
+def _painel_filtros_visivel(page) -> bool:
+    """True se o drawer MUI/Ant de filtros está aberto com Período/De/Até."""
+    if not page:
+        return False
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                    const d = document.querySelector(
+                        '.MuiDrawer-root.MuiDrawer-modal, .MuiDrawer-root.drawer, .ant-drawer-open'
+                    );
+                    if (!d) return false;
+                    const txt = d.innerText || '';
+                    return /Filtros/i.test(txt) && /Per[ií]odo/i.test(txt) && /\\bDe\\b/.test(txt);
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+def _scroll_drawer_ate_filtrar(page) -> None:
+    """Rola o drawer MUI/Ant até o botão Filtrar (abaixo da dobra)."""
+    try:
+        page.evaluate(
+            """() => {
+                const roots = [
+                    ...document.querySelectorAll(
+                        '.MuiDrawer-paper, .MuiDrawer-root .MuiPaper-root, .MuiDrawer-root, '
+                        + '.ant-drawer-open .ant-drawer-body, .ant-drawer-open, [role=\"dialog\"]'
+                    ),
+                ];
+                for (const el of roots) {
+                    if (el && el.scrollHeight > el.clientHeight + 20) {
+                        el.scrollTop = el.scrollHeight;
+                    }
+                }
+                const btn = document.querySelector(
+                    '.MuiDrawer-root button.btn-filters-new, .MuiDrawer-root button'
+                );
+                if (btn) {
+                    const t = (btn.innerText || '').toLowerCase();
+                    if (t.includes('filtrar') || btn.classList.contains('btn-filters-new')) {
+                        btn.scrollIntoView({ block: 'center' });
+                    }
+                }
+                for (const b of document.querySelectorAll('.MuiDrawer-root button, .ant-drawer-open button')) {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    if (t === 'filtrar' || b.classList.contains('btn-filters-new')) {
+                        b.scrollIntoView({ block: 'center' });
+                        break;
+                    }
+                }
+            }"""
+        )
+        page.wait_for_timeout(400)
+    except Exception as exc:
+        logger.debug("[HISTORICO PAP] scroll drawer: %s", exc)
+
+
+def _calendario_popup_visivel(page) -> bool:
+    try:
+        return bool(
+            page.locator(
+                ".MuiPopover-root, .MuiPickersPopper-root, "
+                ".ant-picker-dropdown:not(.ant-picker-dropdown-hidden)"
+            ).count()
+        )
+    except Exception:
+        return False
+
+
+def _fechar_apenas_calendario(page) -> None:
+    """Fecha o popup do calendário SEM fechar o drawer MUI.
+
+    Escape no MuiDrawer-modal fecha o drawer inteiro — nunca usar Escape aqui.
+    """
+    if not page or not _calendario_popup_visivel(page):
+        return
+    try:
+        # Clique seguro DENTRO do papel do drawer (título/área Período)
+        alvo = page.locator(
+            ".MuiDrawer-paper .titulo-filtro, "
+            ".MuiDrawer-root .MuiPaper-root .titulo-filtro, "
+            ".MuiDrawer-paper"
+        ).first
+        if alvo.count():
+            alvo.click(timeout=1500, position={"x": 24, "y": 24})
+            page.wait_for_timeout(300)
+    except Exception:
+        pass
+    # Se ainda aberto, clica no label Período via JS (ainda dentro do drawer)
+    try:
+        if _calendario_popup_visivel(page):
+            page.evaluate(
+                """() => {
+                    const paper = document.querySelector('.MuiDrawer-paper, .MuiDrawer-root .MuiPaper-root');
+                    if (!paper) return;
+                    const label = [...paper.querySelectorAll('div,span,p,label')]
+                        .find((e) => /^Per[ií]odo$/i.test((e.innerText || '').trim()));
+                    (label || paper).click();
+                }"""
+            )
+            page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
+def _clicar_filtrar_no_drawer(page) -> bool:
+    """Clica Filtrar habilitado estritamente dentro do papel do drawer (nunca no backdrop)."""
+    if not page:
+        return False
+
+    if not _painel_filtros_visivel(page):
+        logger.warning("[HISTORICO PAP] Drawer fechado antes do clique em Filtrar.")
+        return False
+
+    _fechar_apenas_calendario(page)
+
+    # Preferência: clique JS no botão dentro de .MuiDrawer-paper (sem coordenadas de mouse)
+    try:
+        clicked = page.evaluate(
+            """() => {
+                const paper = document.querySelector(
+                    '.MuiDrawer-paper, .MuiDrawer-root .MuiPaper-root, .ant-drawer-open .ant-drawer-content'
+                );
+                if (!paper) return { ok: false, reason: 'sem_paper' };
+                const candidates = [
+                    ...paper.querySelectorAll('button.btn-filters-new'),
+                    ...paper.querySelectorAll('button'),
+                ];
+                for (const b of candidates) {
+                    const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    if (t === 'filtros' || t === 'filtro') continue;
+                    const isFiltrar = b.classList.contains('btn-filters-new')
+                        || t === 'filtrar'
+                        || (t.includes('filtrar') && !t.includes('filtros'));
+                    if (!isFiltrar) continue;
+                    const disabled = b.disabled
+                        || b.getAttribute('disabled') != null
+                        || b.classList.contains('Mui-disabled')
+                        || b.classList.contains('ant-btn-disabled')
+                        || b.getAttribute('aria-disabled') === 'true';
+                    if (disabled) return { ok: false, reason: 'disabled', text: t };
+                    b.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    b.click();
+                    return { ok: true, text: t || 'btn-filters-new' };
+                }
+                return { ok: false, reason: 'nao_achou' };
+            }"""
+        )
+        logger.info("[HISTORICO PAP] Clique Filtrar (JS no paper): %s", clicked)
+        if clicked and clicked.get("ok"):
+            page.wait_for_timeout(2800)
+            # Drawer pode fechar após Filtrar com sucesso — ok
+            return True
+        if clicked and clicked.get("reason") == "disabled":
+            logger.warning("[HISTORICO PAP] Filtrar ainda disabled no paper.")
+            return False
+    except Exception as exc:
+        logger.debug("[HISTORICO PAP] JS Filtrar no paper: %s", exc)
+
+    # Playwright: só seletores DENTRO do paper, sem force
+    seletores = [
+        '.MuiDrawer-paper button.btn-filters-new:not([disabled])',
+        '.MuiDrawer-root .MuiPaper-root button.btn-filters-new:not([disabled])',
+        '.MuiDrawer-paper button:has-text("Filtrar"):not([disabled])',
+        '.ant-drawer-open .ant-drawer-body button:has-text("Filtrar"):not([disabled])',
+        '.ant-drawer-open .ant-drawer-footer button:has-text("Filtrar"):not([disabled])',
+    ]
+    for sel in seletores:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() == 0:
+                continue
+            loc.scroll_into_view_if_needed(timeout=2000)
+            logger.info("[HISTORICO PAP] Clicando Filtrar no paper: %s", sel)
+            loc.click(timeout=5000)  # SEM force — evita acertar backdrop
+            page.wait_for_timeout(2800)
+            return True
+        except Exception as exc:
+            logger.debug("[HISTORICO PAP] clique paper '%s': %s", sel, exc)
+
+    logger.warning("[HISTORICO PAP] Não conseguiu clicar Filtrar dentro do drawer.")
+    return False
+
+
 def _tentar_clicar_filtrar(
     page,
     *,
     data_inicio: date | None = None,
     data_fim: date | None = None,
 ) -> None:
-    """Clica Filtrar/Buscar na SPA para ela mesma chamar /api/portal/vendas."""
+    """Abre Filtros, escolhe dias no calendário, clica Filtrar DENTRO do drawer."""
     if not page:
         return
 
-    seletores_filtro = [
-        'button:has-text("Filtrar")',
-        'button:has-text("Buscar")',
-        'button:has-text("FILTRAR")',
-        'button:has-text("BUSCAR")',
-        'button[class*="filtrar"]',
-        'button.btn-filters-new',
-        'button:has-text("Pesquisar")',
-        'button:has-text("Aplicar")',
-    ]
-    seletores_abrir_filtro = [
-        'button#drawer-filter',
-        '#drawer-filter',
-        'button:has-text("Filtros")',
-        'span:has-text("Filtros")',
-        'div:has-text("Filtro")',
-    ]
-
-    for sel in seletores_abrir_filtro:
-        try:
-            btn = page.query_selector(sel)
-            if btn and btn.is_visible():
-                logger.info("[HISTORICO PAP] Abrindo filtros com '%s'...", sel)
-                _force_click(page, btn)
-                page.wait_for_timeout(2000)
-                try:
-                    page.wait_for_selector(
-                        '.ant-picker-input input, input[placeholder*="Data" i], input[type="date"], .ant-drawer-open input',
-                        timeout=4000,
-                    )
-                except Exception:
-                    pass
-                break
-        except Exception:
-            pass
-
-    _preencher_datas_filtro_spa(page, data_inicio, data_fim)
-
-    for sel in seletores_filtro:
-        try:
-            btn = page.query_selector(sel)
-            if btn and btn.is_visible():
-                logger.info("[HISTORICO PAP] Clicando em '%s' para disparar XHR da SPA...", sel)
-                _force_click(page, btn)
-                page.wait_for_timeout(2500)
-                # Segundo clique (algumas UIs Ant só disparam no 2º)
-                try:
-                    if btn.is_visible():
-                        _force_click(page, btn)
-                        page.wait_for_timeout(1500)
-                except Exception:
-                    pass
-                return
-        except Exception:
-            pass
-
-    # Sem drawer: tenta qualquer botão Filtrar/Buscar na página
-    try:
-        btn = page.get_by_role("button", name=re.compile(r"filtrar|buscar|pesquisar|aplicar", re.I)).first
-        if btn:
-            logger.info("[HISTORICO PAP] Clicando botão Filtrar via role...")
-            btn.click(timeout=3000, force=True)
-            page.wait_for_timeout(2500)
+    def _abrir_drawer() -> None:
+        if _painel_filtros_visivel(page):
             return
+        for sel in (
+            '#drawer-filter',
+            'button#drawer-filter',
+            'button.drawer-button',
+            'button:has-text("Filtros")',
+        ):
+            try:
+                loc = page.locator(sel).first
+                if loc.count() == 0:
+                    continue
+                logger.info("[HISTORICO PAP] Abrindo filtros com '%s'...", sel)
+                loc.click(timeout=4000, force=True)
+                page.wait_for_timeout(2200)
+                break
+            except Exception:
+                continue
+        fim_w = time.time() + 10
+        while time.time() < fim_w:
+            if _painel_filtros_visivel(page):
+                logger.info("[HISTORICO PAP] Painel de filtros visível.")
+                return
+            try:
+                if page.locator(
+                    ".MuiDrawer-root .MuiInputBase-adornedEnd input"
+                ).count() >= 2:
+                    logger.info("[HISTORICO PAP] Painel detectado pelos inputs De/Até.")
+                    return
+            except Exception:
+                pass
+            page.wait_for_timeout(300)
+        logger.warning("[HISTORICO PAP] Drawer de filtros não ficou visível.")
+
+    _abrir_drawer()
+
+    try:
+        page.wait_for_selector(
+            ".MuiDrawer-root .MuiInputBase-adornedEnd input, "
+            ".MuiDrawer-paper input.MuiOutlinedInput-input",
+            timeout=6000,
+        )
     except Exception:
         pass
 
-    logger.warning("[HISTORICO PAP] Não encontrou botão de filtrar/buscar na página histórico.")
+    _preencher_datas_filtro_spa(page, data_inicio, data_fim)
+
+    # Garante que o drawer não fechou ao escolher datas
+    if not _painel_filtros_visivel(page):
+        logger.warning("[HISTORICO PAP] Drawer fechou após datas — reabrindo uma vez.")
+        _abrir_drawer()
+        _preencher_datas_filtro_spa(page, data_inicio, data_fim)
+
+    _fechar_apenas_calendario(page)
+    _scroll_drawer_ate_filtrar(page)
+    enabled = _aguardar_filtrar_habilitado(page, timeout_ms=10000)
+    logger.info("[HISTORICO PAP] Filtrar enabled=%s drawer_open=%s", enabled, _painel_filtros_visivel(page))
+
+    if not _painel_filtros_visivel(page):
+        logger.warning("[HISTORICO PAP] Drawer fechado antes do Filtrar — abortando clique.")
+        return
+
+    _scroll_drawer_ate_filtrar(page)
+    if _clicar_filtrar_no_drawer(page):
+        logger.info("[HISTORICO PAP] Filtrar clicado com sucesso.")
+        return
+
+    logger.warning(
+        "[HISTORICO PAP] Filtrar não clicável (disabled=%s ou seletor errado).",
+        not enabled,
+    )
 
 
 def _url_eh_api_pap(url: str) -> bool:
