@@ -2163,8 +2163,43 @@ def xlsx_novos_da_busca(busca_id: int) -> tuple[bytes, str]:
                 linhas.append(map_pedido_api(p.payload, p.tipo_venda))
             else:
                 linhas.append({"tipo_venda": p.tipo_venda, "pedido": p.numero_pedido, "status": p.status})
-    nome = f"Historico_PAP_{busca.data_inicio}_{busca.data_fim}.xlsx"
+    nome = f"Historico_PAP_novos_{busca.data_inicio}_{busca.data_fim}.xlsx"
     return montar_xlsx_historico(linhas), nome
+
+
+def xlsx_periodo_da_busca(busca_id: int) -> tuple[bytes, str, int]:
+    """
+    Excel no padrão da busca: todos os pedidos do histórico PAP no período/tipos
+    da busca (o que a coleta cobre), não só os 'novos'.
+    """
+    from datetime import datetime, time
+
+    from django.db.models import Q
+    from django.utils import timezone
+
+    from crm_app.models import HistoricoPapBusca, HistoricoPapPedido
+
+    busca = HistoricoPapBusca.objects.get(pk=busca_id)
+    ini = timezone.make_aware(datetime.combine(busca.data_inicio, time.min))
+    fim = timezone.make_aware(datetime.combine(busca.data_fim, time.max))
+    tipos = list(busca.tipos or []) or ["VENDA"]
+
+    qs = (
+        HistoricoPapPedido.objects.filter(tipo_venda__in=tipos)
+        .filter(
+            Q(data_criacao_pap__gte=ini, data_criacao_pap__lte=fim)
+            | Q(data_criacao_pap__isnull=True, capturado_em__gte=ini, capturado_em__lte=fim)
+        )
+        .order_by("data_criacao_pap", "numero_pedido")
+    )
+    linhas = []
+    for p in qs:
+        if p.payload:
+            linhas.append(map_pedido_api(p.payload, p.tipo_venda))
+        else:
+            linhas.append({"tipo_venda": p.tipo_venda, "pedido": p.numero_pedido, "status": p.status})
+    nome = f"Historico_PAP_{busca.data_inicio}_{busca.data_fim}.xlsx"
+    return montar_xlsx_historico(linhas), nome, len(linhas)
 
 
 def _atualizar(busca_id: int, **kwargs):

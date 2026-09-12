@@ -809,8 +809,11 @@ main.area-interna-section.auditoria-page:not(.auditoria-modo-lista) {
                         </ul>
                     </div>
 
-                    <button type="button" class="btn btn-sm btn-outline-success ms-auto me-2" id="btn-sync-pap" onclick="iniciarBuscaPapOnline()">
+                    <button type="button" class="btn btn-sm btn-outline-success ms-auto me-1" id="btn-sync-pap" onclick="iniciarBuscaPapOnline()">
                         <i class="bi bi-cloud-download"></i><span class="d-none d-md-inline ms-1">Buscar do PAP</span>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-primary me-2" id="btn-excel-pap" onclick="baixarExcelPapOnline()" title="Baixar Excel do período da última busca PAP">
+                        <i class="bi bi-file-earmark-excel"></i><span class="d-none d-md-inline ms-1">Excel PAP</span>
                     </button>
 
                     <div class="dropdown">
@@ -1728,6 +1731,40 @@ function salvarConfigPap() {
     alert('Configuração salva! A próxima busca usará este período.');
 }
 
+async function baixarExcelPapOnline(buscaId) {
+    const token = localStorage.getItem('accessToken');
+    const headers = {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    };
+    const qs = buscaId
+        ? `?id=${encodeURIComponent(buscaId)}&escopo=periodo`
+        : '?escopo=periodo';
+    try {
+        const resp = await fetch(`/api/crm/funil-venda-wpp/historico-pap/download/${qs}`, { headers });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.arquivo_base64) {
+            alert(data.error || data.detail || 'Sem arquivo Excel para baixar. Faça uma busca PAP antes.');
+            return false;
+        }
+        const bin = atob(data.arquivo_base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const blob = new Blob([bytes], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = data.nome_arquivo || 'Historico_PAP.xlsx';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        return true;
+    } catch (err) {
+        console.error(err);
+        alert('Erro ao baixar Excel do PAP.');
+        return false;
+    }
+}
+
 async function iniciarBuscaPapOnline() {
     const btn = document.getElementById('btn-sync-pap');
     btn.disabled = true;
@@ -1810,11 +1847,15 @@ async function iniciarBuscaPapOnline() {
         }
 
         const novos = ultimo.novos != null ? ultimo.novos : '?';
+        const encontrados = ultimo.encontrados != null ? ultimo.encontrados : '?';
         const criadas = syncData.criadas != null ? syncData.criadas : '?';
-        alert(
-            `Busca concluída. Novos no PAP: ${novos}. Vendas criadas no CRM: ${criadas}.\n` +
-            (syncData.mensagem || '')
+        const baixar = confirm(
+            `Busca concluída. Encontrados: ${encontrados}. Novos: ${novos}. Vendas criadas: ${criadas}.\n\n` +
+            `Deseja baixar o Excel do período da busca (padrão PAP)?`
         );
+        if (baixar) {
+            await baixarExcelPapOnline(buscaId);
+        }
         if (typeof carregarVendasPendentes === 'function') {
             carregarVendasPendentes();
         }

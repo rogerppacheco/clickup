@@ -181,10 +181,11 @@ class FunilHistoricoPapDownloadView(APIView):
     def get(self, request):
         if not is_member(request.user, ["Diretoria", "Admin"]):
             return Response({"detail": "Sem permissão."}, status=403)
-        from crm_app.historico_pap_service import xlsx_novos_da_busca
+        from crm_app.historico_pap_service import xlsx_novos_da_busca, xlsx_periodo_da_busca
         from crm_app.models import HistoricoPapBusca
 
         busca_id = request.query_params.get("id") or request.query_params.get("busca_id")
+        escopo = (request.query_params.get("escopo") or "periodo").strip().lower()
         if busca_id:
             busca = HistoricoPapBusca.objects.filter(pk=busca_id).first()
         else:
@@ -192,7 +193,11 @@ class FunilHistoricoPapDownloadView(APIView):
         if not busca:
             return Response({"error": "Nenhuma busca concluída para baixar."}, status=404)
         try:
-            blob, nome = xlsx_novos_da_busca(busca.id)
+            if escopo in ("novos", "novo", "new"):
+                blob, nome = xlsx_novos_da_busca(busca.id)
+                qtd = busca.novos
+            else:
+                blob, nome, qtd = xlsx_periodo_da_busca(busca.id)
         except Exception:
             logger.exception("Falha ao montar Excel do histórico PAP")
             return Response({"error": "Não foi possível montar a planilha."}, status=400)
@@ -200,7 +205,13 @@ class FunilHistoricoPapDownloadView(APIView):
             {
                 "success": True,
                 "nome_arquivo": nome,
+                "linhas": qtd,
                 "novos": busca.novos,
+                "encontrados": busca.encontrados,
+                "escopo": "novos" if escopo in ("novos", "novo", "new") else "periodo",
+                "busca_id": busca.id,
+                "data_inicio": busca.data_inicio.isoformat() if busca.data_inicio else "",
+                "data_fim": busca.data_fim.isoformat() if busca.data_fim else "",
                 "arquivo_base64": base64.b64encode(blob).decode("ascii"),
                 "grava_venda": False,
             }
