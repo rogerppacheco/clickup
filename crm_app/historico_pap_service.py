@@ -571,18 +571,44 @@ def _fetch_json(page, url: str, token: str = "") -> dict:
     return res if res.get("status") else res2
 
 
-def _navegar_ao_historico_spa(page) -> None:
-    """Navega para o Histórico de Pedidos via menu lateral da SPA ou goto direto."""
+def _navegar_ao_historico_spa(page, *, force_reload: bool = False) -> None:
+    """Navega para o Histórico de Pedidos via menu lateral da SPA ou goto direto.
+
+    force_reload=True: sempre recarrega a URL do histórico. Necessário na coleta,
+    porque o login já pode ter aberto /historico e disparado /vendas antes dos
+    listeners/route estarem instalados — sem reload, a SPA não chama de novo.
+    """
     if not page:
         return
     url_atual = (page.url or "").lower()
-    if "administrativo/historico" in url_atual:
-        # Aguarda a página terminar de renderizar o React antes de continuar
+    ja_no_historico = "administrativo/historico" in url_atual
+
+    if ja_no_historico and force_reload:
         try:
-            page.wait_for_selector('button#drawer-filter, button:has-text("Filtrar"), button:has-text("Buscar")', timeout=10000)
+            logger.info("[HISTORICO PAP] Reload forçado do Histórico para capturar /vendas.")
+            page.goto(PAP_HISTORICO_URL, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(2500)
+        except Exception as exc:
+            logger.warning("[HISTORICO PAP] reload histórico: %s", exc)
+        try:
+            page.wait_for_selector(
+                'button#drawer-filter, button:has-text("Filtrar"), button:has-text("Buscar")',
+                timeout=10000,
+            )
+        except Exception:
+            page.wait_for_timeout(2000)
+        return
+
+    if ja_no_historico:
+        try:
+            page.wait_for_selector(
+                'button#drawer-filter, button:has-text("Filtrar"), button:has-text("Buscar")',
+                timeout=10000,
+            )
         except Exception:
             page.wait_for_timeout(3000)
         return
+
     # Tentar navegação suave pelo menu da SPA (como a Ana faz)
     try:
         btn_pedidos = page.query_selector('text="Pedidos"') or page.query_selector('div:has-text("Pedidos")')
@@ -850,6 +876,109 @@ def _preencher_datas_filtro_spa(page, data_inicio: date | None = None, data_fim:
         logger.debug("[HISTORICO PAP] Falha ao digitar datas SPA: %s", exc)
 
 
+def _disparar_vendas_via_spa_js(page, *, data_inicio: date, data_fim: date) -> dict | None:
+    """
+    Dispara GET /vendas a partir do browser com JWT do cookie + anti-replay fresco
+    (mesmo algoritmo da SPA: XOR + base64 de JSON.stringify(new Date)).
+
+    Retorna o JSON da API ou None. O page.route também pode capturar este XHR.
+    """
+    if not page or not data_inicio or not data_fim:
+        return None
+    from crm_app.historico_pap import STATUS_LISTA_PADRAO, montar_url_vendas
+
+    url = montar_url_vendas(
+        data_inicio=_iso_inicio(data_inicio),
+        data_fim=_iso_fim(data_fim),
+        pdv="",
+        tipo_api="VENDA",
+        page=1,
+        limit=200,
+        status=STATUS_LISTA_PADRAO,
+    )
+    try:
+        result = page.evaluate(
+            """async (url) => {
+                const key = '-5Hsrpt5gb93N5L9ePT2bBC9MI9ThLctvltkuoOqh2Q';
+                const antiReplay = () => {
+                    const plaintext = JSON.stringify(new Date());
+                    let out = '';
+                    for (let i = 0; i < plaintext.length; i++) {
+                        out += String.fromCharCode(
+                            plaintext.charCodeAt(i) ^ key.charCodeAt(i % key.length)
+                        );
+                    }
+                    return btoa(out);
+                };
+                const readCookie = (name) => {
+                    const m = document.cookie.match(
+                        new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\\[\\]\\\\/+^])/g, '\\\\$1') + '=([^;]*)')
+                    );
+                    return m ? decodeURIComponent(m[1]) : '';
+                };
+                let token = '';
+                try {
+                    for (const k of Object.keys(localStorage || {})) {
+                        const v = localStorage.getItem(k) || '';
+                        if (v.includes('eyJ') && v.length > 80) { token = v; break; }
+                    }
+                } catch (e) {}
+                if (!token) token = readCookie('token') || readCookie('Token') || '';
+                token = (token || '').replace(/^Bearer\\s+/i, '').replace(/^[\"']|[\"']$/g, '').trim();
+                const m = token.match(/eyJ[A-Za-z0-9_\\-+/=]+\\.[A-Za-z0-9_\\-+/=]+\\.[A-Za-z0-9_\\-+/=]+/);
+                if (!m) return { ok: false, error: 'sem_jwt', tokenLen: token.length };
+                let jwt = m[0];
+                const parts = jwt.split('.');
+                if (parts.length === 3 && parts[2].length >= 43 + 36) {
+                    jwt = parts[0] + '.' + parts[1] + '.' + parts[2].slice(0, -36);
+                } else if (parts.length === 3 && parts[2].length > 43) {
+                    jwt = parts[0] + '.' + parts[1] + '.' + parts[2].slice(0, 43);
+                }
+                // SPA envia JWT+hash SEM prefixo Bearer
+                const auth = jwt + antiReplay();
+
+                const bodyText = await new Promise((resolve) => {
+                    try {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('GET', url, true);
+                        xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
+                        xhr.setRequestHeader('Authorization', auth);
+                        xhr.withCredentials = true;
+                        xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText || '' });
+                        xhr.onerror = () => resolve({ status: 0, text: 'xhr_error' });
+                        xhr.send();
+                    } catch (e) {
+                        resolve({ status: 0, text: String((e && e.message) || e) });
+                    }
+                });
+                let json = null;
+                try { json = JSON.parse(bodyText.text || ''); } catch (e) {}
+                return {
+                    ok: bodyText.status >= 200 && bodyText.status < 300 && !!json,
+                    status: bodyText.status,
+                    preview: (bodyText.text || '').slice(0, 200),
+                    json,
+                    authLen: auth.length,
+                    url,
+                };
+            }""",
+            url,
+        )
+        logger.info(
+            "[HISTORICO PAP] Disparo JS /vendas status=%s ok=%s authLen=%s preview=%s",
+            (result or {}).get("status"),
+            (result or {}).get("ok"),
+            (result or {}).get("authLen"),
+            str((result or {}).get("preview") or "")[:160].replace("\n", " "),
+        )
+        if result and result.get("ok") and isinstance(result.get("json"), dict):
+            return {"url": result.get("url") or url, "status": result.get("status"), "json": result["json"]}
+        return None
+    except Exception as exc:
+        logger.warning("[HISTORICO PAP] Disparo JS /vendas falhou: %s", exc)
+        return None
+
+
 def _tentar_clicar_filtrar(
     page,
     *,
@@ -1082,7 +1211,33 @@ def _coletar_vendas_via_rede_spa(
         page.route("**/api/portal/vendas**", _on_route)
         route_installed = True
 
-        _navegar_ao_historico_spa(page)
+        # Sempre recarrega COM route/listeners já ativos — o login já pode ter
+        # aberto o histórico e disparado /vendas antes da interceptação.
+        _navegar_ao_historico_spa(page, force_reload=True)
+        try:
+            dbg = page.evaluate(
+                """() => ({
+                    url: location.href,
+                    title: document.title,
+                    nInputs: document.querySelectorAll('input').length,
+                    nButtons: document.querySelectorAll('button').length,
+                    btnTexts: [...document.querySelectorAll('button')]
+                        .map(b => (b.innerText || b.getAttribute('aria-label') || '').trim())
+                        .filter(Boolean)
+                        .slice(0, 25),
+                    inputHints: [...document.querySelectorAll('input')].slice(0, 25).map(i => ({
+                        type: i.type || '',
+                        ph: i.placeholder || '',
+                        name: i.name || '',
+                        id: i.id || '',
+                        cls: (i.className || '').toString().slice(0, 60),
+                        vis: !!(i.offsetParent || (i.getClientRects && i.getClientRects().length))
+                    }))
+                })"""
+            )
+            logger.info("[HISTORICO PAP] DOM pós-reload: %s", dbg)
+        except Exception as exc:
+            logger.debug("[HISTORICO PAP] DOM debug falhou: %s", exc)
 
         # 1) Espera auto-load da SPA
         fim_load = time.time() + min(12.0, timeout_ms / 1000.0)
@@ -1146,13 +1301,32 @@ def _coletar_vendas_via_rede_spa(
                     break
             return _matched() or list(collected)
 
-        # 3) Último recurso: NÃO reutilizar Authorization (anti-replay one-shot → jwt malformed).
-        # Só loga diagnóstico.
+        # 3) Disparo no browser: cookie JWT + anti-replay fresco (igual à SPA)
+        if data_inicio and data_fim:
+            logger.warning(
+                "[HISTORICO PAP] UI não trouxe /vendas — disparando XHR no browser com anti-replay fresco."
+            )
+            pack = _disparar_vendas_via_spa_js(page, data_inicio=data_inicio, data_fim=data_fim)
+            # Aguardar route capturar o mesmo XHR, se interceptou
+            fim_js = time.time() + 8.0
+            while time.time() < fim_js and not _matched() and not collected:
+                page.wait_for_timeout(300)
+            if pack and not collected:
+                _append_pack(pack["url"], pack["status"], pack["json"])
+            matched = _matched() or list(collected)
+            if matched:
+                logger.info("[HISTORICO PAP] Coleta via disparo JS OK (%d pacote(s)).", len(matched))
+                return matched
+
+        # 4) Diagnóstico final
         if captured_auth["value"]:
             logger.warning(
-                "[HISTORICO PAP] Havia Authorization da SPA (len=%d) mas /vendas não disparou. "
-                "Não reutilizamos o token (anti-replay). Auth events ok; falta XHR /vendas.",
+                "[HISTORICO PAP] Havia Authorization da SPA (len=%d) mas /vendas não retornou dados.",
                 len(captured_auth["value"]),
+            )
+        else:
+            logger.warning(
+                "[HISTORICO PAP] Nenhum request pap-api com Authorization foi observado após reload."
             )
         if not collected and erros:
             logger.warning(
