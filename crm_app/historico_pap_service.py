@@ -657,14 +657,175 @@ def _datas_url_correspondem(url: str, data_inicio: date | None, data_fim: date |
     return ini_raw[:10] == data_inicio.isoformat() and fim_raw[:10] == data_fim.isoformat()
 
 
-def _rewritar_url_vendas_periodo(url: str, data_inicio: date, data_fim: date, *, limit: int = 200) -> str:
-    """Troca só dataInicio/dataFim (e limit) na URL; mantém demais params da SPA."""
+def _rotulo_tipo_ui(tipo_crm: str) -> str:
+    t = (tipo_crm or "").strip().upper()
+    if t in ("INTERESSE", "INTERESSE_SALVO"):
+        return "Interesse"
+    if t in ("PRE_VENDA", "PRE-VENDA", "PREVENDAS"):
+        return "Pré-Venda"
+    return "Venda"
+
+
+def _tipo_api_para_spa(tipo_crm: str) -> str:
+    """Valor de tipoVenda na API do histórico (o que a SPA manda ao escolher Tipo)."""
+    t = (tipo_crm or "").strip().upper()
+    if t in ("INTERESSE", "INTERESSE_SALVO"):
+        # SPA usa INTERESSE_SALVO (não INTERESSE) ao filtrar Tipo=Interesse
+        return "INTERESSE_SALVO"
+    if t in ("PRE_VENDA", "PRE-VENDA", "PREVENDAS"):
+        return "PRE_VENDA"
+    return "VENDA"
+
+
+def _status_lista_para_tipo_api(tipo_api: str) -> str | None:
+    t = (tipo_api or "").upper()
+    if t == "VENDA":
+        return STATUS_LISTA_PADRAO
+    if t in ("INTERESSE", "INTERESSE_SALVO"):
+        return "MINHAS_PENDENCIAS"
+    return None
+
+
+STATUS_SECUNDARIO_INTERESSE = (
+    "INTERESSE_SALVO,INTERESSE_ENCERRADO,INTERESSE_AUTOMATICO"
+)
+
+def _selecionar_tipo_filtro_spa(page, tipo_crm: str) -> bool:
+    """
+    No drawer Filtros, troca o react-select Tipo (Venda/Interesse/Pré-Venda).
+
+    React-select só confirma opção no mousedown — click simples não marca.
+    """
+    if not page:
+        return False
+    alvo = _rotulo_tipo_ui(tipo_crm)
+    logger.info("[HISTORICO PAP] Selecionando Tipo=%s no drawer...", alvo)
+
+    # 1) Abre o 1º react-select do drawer (campo Tipo)
+    aberto = page.evaluate(
+        """() => {
+            const root = document.querySelector('.MuiDrawer-paper, .MuiDrawer-root, .ant-drawer-open')
+                || document;
+            const inputs = [...root.querySelectorAll('input[id^="react-select-"]')];
+            if (!inputs.length) return { ok: false, reason: 'sem react-select' };
+            const inp = inputs[0];
+            const control = inp.closest('[class*="control"]') || inp.parentElement;
+            if (control) control.click();
+            inp.focus();
+            inp.click();
+            return { ok: true, id: inp.id || '', value: inp.value || '' };
+        }"""
+    )
+    logger.info("[HISTORICO PAP] Abrir select Tipo: %s", aberto)
+    page.wait_for_timeout(500)
+
+    # 2) Marca a opção via mousedown (react-select) — tenta várias vezes
+    for tentativa in range(4):
+        sel = page.evaluate(
+            """(alvo) => {
+                const norm = (s) => (s || '').trim().toLowerCase()
+                    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                const want = norm(alvo);
+                const opts = [
+                    ...document.querySelectorAll('[id*="-option-"]'),
+                    ...document.querySelectorAll('[class*="option"]'),
+                    ...document.querySelectorAll('[role="option"]'),
+                    ...document.querySelectorAll('.MuiDrawer-paper div'),
+                ];
+                const seen = new Set();
+                const candidates = [];
+                for (const el of opts) {
+                    const t = (el.innerText || el.textContent || '').trim();
+                    if (!t || t.length > 40) continue;
+                    const key = t + '|' + (el.id || '');
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    candidates.push(t);
+                    if (norm(t) === want || norm(t).includes(want)) {
+                        el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+                        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return { ok: true, text: t, id: el.id || '', candidates: candidates.slice(0, 12) };
+                    }
+                }
+                return { ok: false, candidates: candidates.slice(0, 20) };
+            }""",
+            alvo,
+        )
+        logger.info("[HISTORICO PAP] Opção Tipo tentativa %s: %s", tentativa + 1, sel)
+        if sel and sel.get("ok"):
+            page.wait_for_timeout(400)
+            break
+        # Digita no input e Enter (fallback)
+        try:
+            page.evaluate(
+                """(txt) => {
+                    const root = document.querySelector('.MuiDrawer-paper, .MuiDrawer-root') || document;
+                    const inp = root.querySelector('input[id^="react-select-"]');
+                    if (!inp) return false;
+                    inp.focus();
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value'
+                    ).set;
+                    setter.call(inp, txt);
+                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                    inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }""",
+                alvo,
+            )
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(400)
+        except Exception:
+            pass
+        page.wait_for_timeout(350)
+
+    # 3) Confirma se o control deixou de mostrar só "Venda" quando pedimos Interesse
+    conf = page.evaluate(
+        """(alvo) => {
+            const root = document.querySelector('.MuiDrawer-paper, .MuiDrawer-root') || document;
+            const blob = (root.innerText || '').slice(0, 800);
+            const norm = (s) => (s || '').toLowerCase()
+                .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+            return {
+                temAlvo: norm(blob).includes(norm(alvo)),
+                trecho: blob.slice(0, 200),
+            };
+        }""",
+        alvo,
+    )
+    ok = bool(sel and sel.get("ok")) or bool(conf and conf.get("temAlvo") and alvo.lower() != "venda")
+    # Se pediu Venda e já era Venda, ok
+    if alvo.lower() == "venda":
+        ok = True
+    logger.info("[HISTORICO PAP] Tipo após seleção ok=%s conf=%s", ok, conf)
+    return ok
+
+
+def _rewritar_url_vendas_periodo(
+    url: str,
+    data_inicio: date,
+    data_fim: date,
+    *,
+    limit: int = 200,
+    tipo_api: str | None = None,
+    status: str | None = ...,
+) -> str:
+    """Troca dataInicio/dataFim/limit; opcionalmente tipoVenda e status."""
     from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
     parsed = urlparse(url)
     pairs = parse_qsl(parsed.query, keep_blank_values=True)
     out: list[tuple[str, str]] = []
     seen_limit = False
+    seen_tipo = False
+    seen_status = False
+    seen_status_sec = False
+    tipo_alvo = (_tipo_api_para_spa(tipo_api) if tipo_api else None)
+    # status=... sentinel: manter; None: remover; str: setar
+    status_mode = status
+
     for k, v in pairs:
         lk = k.lower()
         if lk == "datainicio":
@@ -674,13 +835,40 @@ def _rewritar_url_vendas_periodo(url: str, data_inicio: date, data_fim: date, *,
         elif lk == "limit":
             out.append((k, str(limit)))
             seen_limit = True
+        elif lk == "tipovenda":
+            if tipo_alvo:
+                out.append((k, tipo_alvo))
+                seen_tipo = True
+            else:
+                out.append((k, v))
+                seen_tipo = True
+        elif lk == "status":
+            if status_mode is ...:
+                out.append((k, v))
+                seen_status = True
+            elif status_mode is None:
+                seen_status = True
+            else:
+                out.append((k, str(status_mode)))
+                seen_status = True
+        elif lk == "statussecundario":
+            if tipo_alvo in ("INTERESSE_SALVO", "INTERESSE"):
+                out.append((k, STATUS_SECUNDARIO_INTERESSE))
+                seen_status_sec = True
+            else:
+                out.append((k, v))
+                seen_status_sec = True
         else:
             out.append((k, v))
     if not seen_limit:
         out.append(("limit", str(limit)))
+    if tipo_alvo and not seen_tipo:
+        out.append(("tipoVenda", tipo_alvo))
+    if status_mode is not ... and status_mode is not None and not seen_status:
+        out.append(("status", str(status_mode)))
+    if tipo_alvo in ("INTERESSE_SALVO", "INTERESSE") and not seen_status_sec:
+        out.append(("statusSecundario", STATUS_SECUNDARIO_INTERESSE))
     return urlunparse(parsed._replace(query=urlencode(out)))
-
-
 def _authorization_de_request(request) -> str:
     try:
         auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
@@ -1499,8 +1687,9 @@ def _tentar_clicar_filtrar(
     *,
     data_inicio: date | None = None,
     data_fim: date | None = None,
+    tipo_crm: str | None = None,
 ) -> None:
-    """Abre Filtros, escolhe dias no calendário, clica Filtrar DENTRO do drawer."""
+    """Abre Filtros, escolhe Tipo (se pedido), dias no calendário, clica Filtrar DENTRO do drawer."""
     if not page:
         return
 
@@ -1550,12 +1739,23 @@ def _tentar_clicar_filtrar(
     except Exception:
         pass
 
+    if tipo_crm:
+        try:
+            _selecionar_tipo_filtro_spa(page, tipo_crm)
+        except Exception as exc:
+            logger.warning("[HISTORICO PAP] Falha ao selecionar Tipo=%s: %s", tipo_crm, exc)
+
     _preencher_datas_filtro_spa(page, data_inicio, data_fim)
 
     # Garante que o drawer não fechou ao escolher datas
     if not _painel_filtros_visivel(page):
         logger.warning("[HISTORICO PAP] Drawer fechou após datas — reabrindo uma vez.")
         _abrir_drawer()
+        if tipo_crm:
+            try:
+                _selecionar_tipo_filtro_spa(page, tipo_crm)
+            except Exception:
+                pass
         _preencher_datas_filtro_spa(page, data_inicio, data_fim)
 
     _fechar_apenas_calendario(page)
@@ -1594,12 +1794,13 @@ def _coletar_vendas_via_rede_spa(
     data_fim: date | None = None,
     timeout_ms: int = 50000,
     max_paginas_ui: int = 8,
+    tipo_crm: str | None = None,
 ) -> list[dict]:
     """
     Captura /api/portal/vendas pela rede da SPA (modo seguro).
 
     1) Intercepta o XHR da própria SPA com route.fetch (headers/Authorization frescos).
-    2) Se o período divergir, reescreve só dataInicio/dataFim na URL do fetch.
+    2) Se o período divergir, reescreve dataInicio/dataFim (+ tipoVenda/status se tipo_crm).
     3) Nunca reutiliza Authorization fora do request original (anti-replay → jwt malformed).
     """
     if not page:
@@ -1609,6 +1810,8 @@ def _coletar_vendas_via_rede_spa(
     erros: list[str] = []
     captured_auth = {"value": ""}
     seen_urls: set[str] = set()
+    tipo_api = _tipo_api_para_spa(tipo_crm) if tipo_crm else None
+    status_rewrite = _status_lista_para_tipo_api(tipo_api) if tipo_api else ...
 
     def _matched() -> list[dict]:
         if not data_inicio or not data_fim:
@@ -1661,20 +1864,25 @@ def _coletar_vendas_via_rede_spa(
                 pass
             return
 
-        # Sempre reescreve: garante período pedido + limit=200 (SPA default ≈15/página).
-        # Antes só reescrevíamos se a data divergisse → limit ficava 15 e total_api=74
-        # gerava só a 1ª página.
+        # Sempre reescreve: período + limit=200; se tipo_crm, força tipoVenda/status.
         final_url = req.url
         rewrote = False
         if data_inicio and data_fim:
             novo = _rewritar_url_vendas_periodo(
-                req.url, data_inicio, data_fim, limit=200
+                req.url,
+                data_inicio,
+                data_fim,
+                limit=200,
+                tipo_api=tipo_api,
+                status=status_rewrite if tipo_api else ...,
             )
             if novo != req.url:
                 final_url = novo
                 rewrote = True
                 logger.info(
-                    "[HISTORICO PAP] route.fetch reescrevendo /vendas (período+limit=200) → %s→%s",
+                    "[HISTORICO PAP] route.fetch reescrevendo /vendas "
+                    "(período+limit=200 tipo=%s) → %s→%s",
+                    tipo_api or "SPA",
                     data_inicio,
                     data_fim,
                 )
@@ -1771,14 +1979,24 @@ def _coletar_vendas_via_rede_spa(
             page.wait_for_timeout(400)
 
         matched = _matched()
-        if matched:
+        # Auto-load da SPA é sempre Tipo=Venda — se pedimos Interesse/Pré-venda, força Filtrar
+        auto_ok = bool(matched) and (not tipo_api or tipo_api == "VENDA")
+        if auto_ok:
             return matched
         # Se veio /vendas (mesmo fora do período) e o rewrite falhou, ainda devolve o capturado
-        if collected and not matched and not (data_inicio and data_fim):
+        if collected and not matched and not (data_inicio and data_fim) and not tipo_api:
             return list(collected)
 
-        # 2) Tenta Filtrar na UI — o route.fetch ajusta o período no request da SPA
-        _tentar_clicar_filtrar(page, data_inicio=data_inicio, data_fim=data_fim)
+        # 2) Filtrar na UI (Tipo + datas). Limpa pacotes VENDA do auto-load se trocamos tipo.
+        if tipo_api and tipo_api != "VENDA":
+            collected.clear()
+            seen_urls.clear()
+        _tentar_clicar_filtrar(
+            page,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            tipo_crm=tipo_crm,
+        )
         fim = time.time() + min(25.0, timeout_ms / 1000.0)
         while time.time() < fim and not _matched():
             if collected:
@@ -2332,20 +2550,33 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
     pdv = busca.pdv
     tipos = list(busca.tipos or [])
 
-    # ─── PASSO 1: Capturar /vendas da própria SPA ───────────────────────────────
+    # ─── PASSO 1: Capturar /vendas da própria SPA (um Filtrar por tipo) ───────────
+    tipos_loop = tipos or ["VENDA", "INTERESSE", "PRE_VENDA"]
     logger.info(
         "[HISTORICO PAP] Coleta via rede da SPA (sem forjar token). Tipos=%s período=%s→%s",
-        tipos or ["VENDA", "INTERESSE", "PRE_VENDA"],
+        tipos_loop,
         data_ini[:10],
         data_fim[:10],
     )
-    respostas_spa = _coletar_vendas_via_rede_spa(
-        page,
-        data_inicio=busca.data_inicio,
-        data_fim=busca.data_fim,
-        timeout_ms=55000,
-        max_paginas_ui=12,
-    )
+    respostas_spa: list[dict] = []
+    for tipo_crm in tipos_loop:
+        packs = _coletar_vendas_via_rede_spa(
+            page,
+            data_inicio=busca.data_inicio,
+            data_fim=busca.data_fim,
+            timeout_ms=55000,
+            max_paginas_ui=12,
+            tipo_crm=tipo_crm,
+        )
+        if packs:
+            respostas_spa.extend(packs)
+            logger.info(
+                "[HISTORICO PAP] Tipo %s: %d pacote(s) SPA",
+                tipo_crm,
+                len(packs),
+            )
+        else:
+            logger.warning("[HISTORICO PAP] Tipo %s: nenhum pacote SPA", tipo_crm)
 
     itens_brutos: list[dict] = []
     spa_ok = False
@@ -2354,11 +2585,27 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
         for pack in respostas_spa:
             lista, total = extrair_lista_api(pack.get("json"))
             lista = lista or []
-            itens_brutos.extend([x for x in lista if isinstance(x, dict)])
+            tipo_url = ""
+            try:
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(pack.get("url") or "").query)
+                tipo_url = ((qs.get("tipoVenda") or qs.get("tipovenda") or [""])[0] or "").upper()
+            except Exception:
+                tipo_url = ""
+            for x in lista:
+                if not isinstance(x, dict):
+                    continue
+                item = dict(x)
+                if tipo_url and not (
+                    item.get("tipoVenda") or item.get("tipo_venda") or item.get("tipo")
+                ):
+                    item["tipoVenda"] = tipo_url
+                itens_brutos.append(item)
             logger.info(
-                "[HISTORICO PAP] Pacote SPA /vendas: +%d itens (total API=%s)",
+                "[HISTORICO PAP] Pacote SPA /vendas: +%d itens (total API=%s, tipoUrl=%s)",
                 len(lista),
                 total,
+                tipo_url or "?",
             )
 
     # ─── PASSO 2: Fallback seguro — reload + Filtrar de novo (sem reusar Authorization) ─
@@ -2374,24 +2621,27 @@ def _executar_loop_busca(page, *, busca_id: int, busca) -> tuple[bool, str]:
         except Exception as exc:
             logger.warning("[HISTORICO PAP] goto histórico (retry): %s", exc)
 
-        respostas_spa = _coletar_vendas_via_rede_spa(
-            page,
-            data_inicio=busca.data_inicio,
-            data_fim=busca.data_fim,
-            timeout_ms=55000,
-            max_paginas_ui=12,
-        )
-        if respostas_spa:
-            spa_ok = True
-            for pack in respostas_spa:
-                lista, total = extrair_lista_api(pack.get("json"))
-                lista = lista or []
-                itens_brutos.extend([x for x in lista if isinstance(x, dict)])
-                logger.info(
-                    "[HISTORICO PAP] Pacote SPA /vendas (retry): +%d itens (total API=%s)",
-                    len(lista),
-                    total,
-                )
+        for tipo_crm in tipos_loop:
+            packs = _coletar_vendas_via_rede_spa(
+                page,
+                data_inicio=busca.data_inicio,
+                data_fim=busca.data_fim,
+                timeout_ms=55000,
+                max_paginas_ui=12,
+                tipo_crm=tipo_crm,
+            )
+            if packs:
+                spa_ok = True
+                for pack in packs:
+                    lista, total = extrair_lista_api(pack.get("json"))
+                    lista = lista or []
+                    itens_brutos.extend([x for x in lista if isinstance(x, dict)])
+                    logger.info(
+                        "[HISTORICO PAP] Pacote SPA /vendas (retry %s): +%d itens (total API=%s)",
+                        tipo_crm,
+                        len(lista),
+                        total,
+                    )
 
         if not spa_ok:
             return False, (
