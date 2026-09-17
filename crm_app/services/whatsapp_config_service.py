@@ -14,6 +14,7 @@ _PROVIDERS_VALIDOS = frozenset(
         WhatsAppIntegracaoConfig.PROVIDER_EVOLUTION,
         WhatsAppIntegracaoConfig.PROVIDER_WHATSATENDE,
         WhatsAppIntegracaoConfig.PROVIDER_HYBRID,
+        WhatsAppIntegracaoConfig.PROVIDER_META,
     }
 )
 
@@ -21,6 +22,7 @@ _PROVIDERS_CLIENTE_CLOUD = frozenset(
     {
         WhatsAppIntegracaoConfig.PROVIDER_WHATSATENDE,
         WhatsAppIntegracaoConfig.PROVIDER_HYBRID,
+        WhatsAppIntegracaoConfig.PROVIDER_META,
     }
 )
 
@@ -43,7 +45,7 @@ def get_active_whatsapp_provider_name() -> str:
 
 
 def cliente_usa_cloud_api() -> bool:
-    """True quando envios a cliente final passam pela WhatsAtende (Número B)."""
+    """True quando envios a cliente final passam por Cloud API (Meta ou WhatsAtende B)."""
     return get_active_whatsapp_provider_name() in _PROVIDERS_CLIENTE_CLOUD
 
 
@@ -85,6 +87,32 @@ def _credenciais_whatsatende_cliente_ok() -> bool:
     )
 
 
+def _credenciais_meta_ok() -> bool:
+    return bool(
+        (getattr(settings, "META_CLOUD_ACCESS_TOKEN", "") or "").strip()
+        and (getattr(settings, "META_CLOUD_PHONE_NUMBER_ID", "") or "").strip()
+    )
+
+
+def credenciais_meta_cloud_ok() -> bool:
+    """Token de system user + phone_number_id — mínimos para POST /messages."""
+    return _credenciais_meta_ok()
+
+
+def backend_cliente_efetivo() -> str:
+    """Backend real dos envios a cliente: meta | whatsatende_b | zapi | evolution."""
+    name = get_active_whatsapp_provider_name()
+    if name == WhatsAppIntegracaoConfig.PROVIDER_META:
+        return "meta"
+    if name == WhatsAppIntegracaoConfig.PROVIDER_HYBRID:
+        return "meta" if _credenciais_meta_ok() else "whatsatende_b"
+    if name == WhatsAppIntegracaoConfig.PROVIDER_WHATSATENDE:
+        return "whatsatende_b"
+    if name == WhatsAppIntegracaoConfig.PROVIDER_EVOLUTION:
+        return "evolution"
+    return "zapi"
+
+
 def _credenciais_n8n_ok() -> bool:
     for key in ("N8N_OUTBOUND_WEBHOOK_URL", "N8N_WEBHOOK_URL", "OUTBOUND_WEBHOOK_URL"):
         val = getattr(settings, key, None) or os.environ.get(key, "")
@@ -99,13 +127,21 @@ def _validar_credenciais_provedor(provider: str) -> None:
         faltando = []
         if not _credenciais_zapi_ok():
             faltando.append("Z-API (ZAPI_INSTANCE_ID / ZAPI_TOKEN)")
-        if not _credenciais_whatsatende_cliente_ok():
+        if not _credenciais_whatsatende_cliente_ok() and not _credenciais_meta_ok():
             faltando.append(
-                "WhatsAtende B (WHATSATENDE_TOKEN_B / WHATSATENDE_WHATSAPP_ID_B)"
+                "cliente Cloud API: Meta (META_CLOUD_ACCESS_TOKEN / "
+                "META_CLOUD_PHONE_NUMBER_ID) ou WhatsAtende B "
+                "(WHATSATENDE_TOKEN_B / WHATSATENDE_WHATSAPP_ID_B)"
             )
         if faltando:
             raise ValueError(
                 "Modo híbrido exige credenciais de: " + "; ".join(faltando)
+            )
+    elif provider == WhatsAppIntegracaoConfig.PROVIDER_META:
+        if not _credenciais_meta_ok():
+            raise ValueError(
+                "Cloud API Meta exige META_CLOUD_ACCESS_TOKEN e "
+                "META_CLOUD_PHONE_NUMBER_ID no servidor."
             )
     elif provider == WhatsAppIntegracaoConfig.PROVIDER_WHATSATENDE:
         if not _credenciais_whatsatende_ok() and not _credenciais_whatsatende_cliente_ok():
@@ -165,16 +201,32 @@ def build_whatsapp_config_payload() -> Dict[str, Any]:
         "whatsatendeWebhookTokenConfigured": bool(
             (getattr(settings, "WHATSATENDE_WEBHOOK_TOKEN", "") or "").strip()
         ),
-        "hybridReady": _credenciais_zapi_ok() and _credenciais_whatsatende_cliente_ok(),
+        "hybridReady": _credenciais_zapi_ok()
+        and (_credenciais_whatsatende_cliente_ok() or _credenciais_meta_ok()),
+        "metaConfigured": _credenciais_meta_ok(),
+        "metaVerifyConfigured": bool(
+            (getattr(settings, "META_CLOUD_VERIFY_TOKEN", "") or "").strip()
+        ),
+        "metaAppSecretConfigured": bool(
+            (getattr(settings, "META_APP_SECRET", "") or "").strip()
+        ),
+        "metaPhoneNumberId": getattr(settings, "META_CLOUD_PHONE_NUMBER_ID", "") or "",
+        "metaWabaId": getattr(settings, "META_CLOUD_WABA_ID", "") or "",
+        "metaApiVersion": getattr(settings, "META_CLOUD_API_VERSION", "v21.0") or "v21.0",
         "n8nConfigured": _credenciais_n8n_ok(),
         "envDefaultProvider": env_default,
         "atualizadoEm": atualizado_em,
         "atualizadoPor": atualizado_por,
+        "clienteBackend": "" if db_indisponivel else backend_cliente_efetivo(),
         "mapaHybrid": {
             "interno": "zapi",
-            "cliente": "whatsatende_b",
+            "cliente": "meta" if _credenciais_meta_ok() else "whatsatende_b",
         },
     }
+    site_base = (
+        f"{getattr(settings, 'SITE_URL', 'https://site-clickup-production.up.railway.app').rstrip('/')}"
+        "/api/crm/webhook-whatsapp/"
+    )
     try:
         from crm_app.services.whatsapp.webhook_token import (
             montar_url_webhook_whatsatende,
@@ -182,10 +234,8 @@ def build_whatsapp_config_payload() -> Dict[str, Any]:
 
         payload["whatsatendeWebhookUrl"] = montar_url_webhook_whatsatende()
     except Exception:
-        payload["whatsatendeWebhookUrl"] = (
-            f"{getattr(settings, 'SITE_URL', 'https://site-clickup-production.up.railway.app').rstrip('/')}"
-            "/api/crm/webhook-whatsapp/"
-        )
+        payload["whatsatendeWebhookUrl"] = site_base
+    payload["metaWebhookUrl"] = site_base
     if db_indisponivel:
         payload["dbIndisponivel"] = True
         payload["aviso"] = (

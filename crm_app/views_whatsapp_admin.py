@@ -60,6 +60,8 @@ def _backend_conexao(request) -> str:
     if provider == WhatsAppIntegracaoConfig.PROVIDER_HYBRID:
         # Número A = Z-API (sem QR aqui); QR WhatsAtende A não é necessário.
         return "evolution"
+    if provider == WhatsAppIntegracaoConfig.PROVIDER_META:
+        return "evolution"
     # Z-API ativo: preferir WhatsAtende se já tiver ID+token (setup paralelo)
     if _whatsatende_conexao_disponivel():
         return "whatsatende"
@@ -82,13 +84,29 @@ def whatsapp_config_api(request):
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     payload = build_whatsapp_config_payload()
-    if payload.get("provider") == WhatsAppIntegracaoConfig.PROVIDER_HYBRID:
+    if payload.get("provider") == WhatsAppIntegracaoConfig.PROVIDER_META:
         payload["message"] = (
-            "Modo híbrido ativo: Número A (equipe/grupos) via Z-API; "
-            "Número B (cliente/templates) via WhatsAtende. "
-            "Mantenha webhooks dos dois provedores apontando para "
-            "/api/crm/webhook-whatsapp/ (WhatsAtende com token no path)."
+            "Cloud API Meta ativa: envios a cliente via graph.facebook.com. "
+            "Equipe/grupos na Z-API se as credenciais existirem. "
+            "Webhook Meta → /api/crm/webhook-whatsapp/ (GET challenge + HMAC)."
         )
+    elif payload.get("provider") == WhatsAppIntegracaoConfig.PROVIDER_HYBRID:
+        backend = payload.get("clienteBackend") or "whatsatende_b"
+        if backend == "meta":
+            payload["message"] = (
+                "Modo híbrido ativo: Número A (equipe/grupos) via Z-API; "
+                "Número B (cliente/templates) via Cloud API Meta. "
+                "Webhook Meta → /api/crm/webhook-whatsapp/."
+            )
+        else:
+            payload["message"] = (
+                "Modo híbrido ativo: Número A (equipe/grupos) via Z-API; "
+                "Número B (cliente/templates) via WhatsAtende. "
+                "Mantenha webhooks dos dois provedores apontando para "
+                "/api/crm/webhook-whatsapp/ (WhatsAtende com token no path). "
+                "Se META_CLOUD_ACCESS_TOKEN e META_CLOUD_PHONE_NUMBER_ID "
+                "estiverem no servidor, o cliente passa a usar a Graph API."
+            )
     else:
         payload["message"] = (
             "Provedor alterado. Confirme que o webhook inbound aponta para "

@@ -1,5 +1,5 @@
 """
-Templates Meta Nio (Número B / WhatsAtende Cloud API).
+Templates Meta Nio (Número B / Cloud API Meta ou WhatsAtende).
 
 Envio fora da janela 24h e fluxos oficiais (confirmação, instalação, cobrança).
 Botões Quick Reply chegam no webhook como texto do botão.
@@ -57,7 +57,7 @@ def templates_habilitados() -> bool:
         return cliente_usa_cloud_api()
     except Exception:
         provider = (getattr(settings, "WHATSAPP_PROVIDER", "") or "").strip().lower()
-        return provider in ("whatsatende", "hybrid")
+        return provider in ("whatsatende", "hybrid", "meta")
 
 
 def saudacao_meta(agora: Optional[datetime] = None) -> str:

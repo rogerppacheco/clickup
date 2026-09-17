@@ -140,12 +140,25 @@ from rest_framework import status
 # WhatsAtende (com segredo): .../api/crm/webhook-whatsapp/<WHATSATENDE_WEBHOOK_TOKEN>/
 class WebhookWhatsAppView(APIView):
     permission_classes = [AllowAny]  # Permite acesso sem autenticação para webhooks
+    authentication_classes = []  # Meta/Z-API/WhatsAtende não enviam sessão JWT
+
+    def get(self, request, *args, **kwargs):
+        """Handshake Cloud API: hub.mode=subscribe + hub.verify_token + hub.challenge."""
+        from crm_app.services.whatsapp.meta_webhook import (
+            responder_verificacao_webhook_meta,
+        )
+
+        resp = responder_verificacao_webhook_meta(request)
+        if resp is not None:
+            return resp
+        return Response({"status": "ok", "mensagem": "Webhook WhatsApp"}, status=200)
 
     def post(self, request, *args, **kwargs):
         """
         Endpoint para receber eventos do WhatsApp e processar fluxos.
         Sempre retorna uma resposta HTTP para evitar 502 (ngrok/Z-API/Evolution).
         Token opcional no path/query/header para WhatsAtende (sem HMAC nativo).
+        Cloud API Meta: HMAC X-Hub-Signature-256 quando META_APP_SECRET está setado.
         """
         import logging
         from django.conf import settings
@@ -153,8 +166,10 @@ class WebhookWhatsAppView(APIView):
         logger_webhook = logging.getLogger(__name__)
 
         from crm_app.services.whatsapp.webhook_token import (
+            extrair_token_webhook,
             validar_token_webhook_whatsatende,
         )
+        from crm_app.services.whatsapp.meta_webhook import validar_assinatura_meta
 
         path_token = kwargs.get("webhook_token")
         ok_token, erro_token = validar_token_webhook_whatsatende(
@@ -180,15 +195,32 @@ class WebhookWhatsAppView(APIView):
             logger_webhook.exception(f"[WebhookWhatsAppView] Erro ao ler request.data: {e}")
             return Response({'status': 'ok', 'mensagem': 'Payload inválido'}, status=200)
 
+        received, _origem = extrair_token_webhook(request, path_token=path_token)
+        ok_hmac, erro_hmac = validar_assinatura_meta(
+            request,
+            data if isinstance(data, dict) else {},
+            path_token_validado=bool(ok_token and received),
+        )
+        if not ok_hmac:
+            return Response(
+                {"status": "erro", "mensagem": erro_hmac or "Não autorizado"},
+                status=403,
+            )
+
         from crm_app.services.whatsapp.status_entrega_service import (
             processar_webhook_status,
         )
+        from crm_app.whatsapp_webhook_normalizer import (
+            normalizar_webhook,
+            payload_tem_mensagens_inbound_meta,
+        )
 
         status_resp = processar_webhook_status(data if isinstance(data, dict) else {})
-        if status_resp is not None:
+        if status_resp is not None and not payload_tem_mensagens_inbound_meta(
+            data if isinstance(data, dict) else {}
+        ):
             return Response(status_resp, status=200)
 
-        from crm_app.whatsapp_webhook_normalizer import normalizar_webhook
         data = normalizar_webhook(data)
 
         # Fallback: normalizador converteu status que o extrator do raw não viu.

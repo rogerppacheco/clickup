@@ -4928,19 +4928,24 @@ class FunilVendaWppEvento(models.Model):
 
 
 class WhatsAppIntegracaoConfig(models.Model):
-    """Configuração única do provedor WhatsApp (Z-API, Evolution+n8n, WhatsAtende ou híbrido)."""
+    """Configuração única do provedor WhatsApp (Z-API, Evolution+n8n, WhatsAtende, híbrido ou Meta)."""
 
     PROVIDER_ZAPI = "zapi"
     PROVIDER_EVOLUTION = "evolution"
     PROVIDER_WHATSATENDE = "whatsatende"
     PROVIDER_HYBRID = "hybrid"
+    PROVIDER_META = "meta"
     PROVIDER_CHOICES = (
         (PROVIDER_ZAPI, "Z-API (legado / plano B)"),
         (PROVIDER_EVOLUTION, "Evolution + n8n (Opção B)"),
         (PROVIDER_WHATSATENDE, "WhatsAtende (A+B)"),
         (
             PROVIDER_HYBRID,
-            "Híbrido: Z-API (equipe) + WhatsAtende oficial (cliente)",
+            "Híbrido: Z-API (equipe) + WhatsAtende ou Cloud API Meta (cliente)",
+        ),
+        (
+            PROVIDER_META,
+            "Cloud API Meta: Z-API (equipe, se houver) + Graph API (cliente)",
         ),
     )
 

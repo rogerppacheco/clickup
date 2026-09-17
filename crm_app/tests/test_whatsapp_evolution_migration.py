@@ -235,6 +235,8 @@ class TestProviderFactory(SimpleTestCase):
         WHATSATENDE_WHATSAPP_ID_B="194",
         WHATSATENDE_TOKEN="tok-a-unused",
         WHATSATENDE_WHATSAPP_ID="196",
+        META_CLOUD_ACCESS_TOKEN="",
+        META_CLOUD_PHONE_NUMBER_ID="",
     )
     @patch(
         "crm_app.services.whatsapp_config_service.get_active_whatsapp_provider_name",

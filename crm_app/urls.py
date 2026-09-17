@@ -398,9 +398,9 @@ urlpatterns = [
     path('logs-importacao-gdp/', LogsImportacaoGdpPrecoView.as_view(), name='logs-importacao-gdp'),
     path('preco-plano-gdp/', PrecoPlanoGdpLookupView.as_view(), name='preco-plano-gdp'),
     path('logs-importacao-cnpj/', LogsImportacaoCNPJView.as_view(), name='logs-importacao-cnpj'),
-    # Webhook WhatsApp - URL para configurar no Z-API / Evolution / WhatsAtende:
-    # Produção Z-API: https://site-clickup-production.up.railway.app/api/crm/webhook-whatsapp/
-    # WhatsAtende:    https://site-clickup-production.up.railway.app/api/crm/webhook-whatsapp/<WHATSATENDE_WEBHOOK_TOKEN>/
+    # Webhook WhatsApp - URL para configurar no Z-API / Evolution / WhatsAtende / Meta:
+    # Produção Z-API / Cloud API Meta: .../api/crm/webhook-whatsapp/
+    # WhatsAtende:    .../api/crm/webhook-whatsapp/<WHATSATENDE_WEBHOOK_TOKEN>/
     path('webhook-whatsapp/', WebhookWhatsAppView.as_view(), name='webhook-whatsapp'),
     path(
         'webhook-whatsapp/<str:webhook_token>/',

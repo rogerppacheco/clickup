@@ -1,9 +1,10 @@
-"""Factory do provider WhatsApp (zapi | evolution | whatsatende | hybrid)."""
+"""Factory do provider WhatsApp (zapi | evolution | whatsatende | hybrid | meta)."""
 from __future__ import annotations
 
 from typing import Dict, Tuple
 
 from crm_app.services.whatsapp.base import WhatsAppProvider
+from crm_app.services.whatsapp.meta_cloud_provider import MetaCloudProvider
 from crm_app.services.whatsapp.n8n_outbound_provider import N8nOutboundProvider
 from crm_app.services.whatsapp.whatsatende_provider import WhatsAtendeProvider
 from crm_app.services.whatsapp.zapi_provider import ZapiProvider
@@ -23,10 +24,13 @@ def resolve_backend_for_purpose(provider_name: str, purpose: str) -> Tuple[str, 
     """
     Mapeia (provedor global, purpose) → (backend efetivo, role WhatsAtende).
 
-    hybrid: interno → Z-API; cliente → WhatsAtende Número B.
+    hybrid: interno → Z-API; cliente → Meta Cloud se credenciais ok, senão WhatsAtende B.
+    meta: interno → Z-API se configurada, senão Meta; cliente → Meta Cloud.
     whatsatende: dual A/B na mesma plataforma.
     zapi/evolution: um backend só (ignoram purpose).
     """
+    from crm_app.services.whatsapp_config_service import credenciais_meta_cloud_ok
+
     name = (provider_name or "").strip().lower()
     role = (
         PURPOSE_CLIENTE
@@ -35,8 +39,18 @@ def resolve_backend_for_purpose(provider_name: str, purpose: str) -> Tuple[str, 
     )
     if name == "hybrid":
         if role == PURPOSE_CLIENTE:
+            if credenciais_meta_cloud_ok():
+                return "meta", PURPOSE_CLIENTE
             return "whatsatende", PURPOSE_CLIENTE
         return "zapi", PURPOSE_INTERNO
+    if name == "meta":
+        if role == PURPOSE_CLIENTE:
+            return "meta", PURPOSE_CLIENTE
+        from crm_app.services.whatsapp_config_service import _credenciais_zapi_ok
+
+        if _credenciais_zapi_ok():
+            return "zapi", PURPOSE_INTERNO
+        return "meta", PURPOSE_INTERNO
     if name == "whatsatende":
         return "whatsatende", role
     if name == "evolution":
@@ -51,7 +65,8 @@ def get_whatsapp_provider(purpose: str = PURPOSE_INTERNO) -> WhatsAppProvider:
     purpose=interno → bot/equipe/grupos (Número A).
     purpose=cliente → cliente final / Cloud API (Número B).
 
-    Modo hybrid: Z-API (interno) + WhatsAtende B (cliente).
+    Modo hybrid: Z-API (interno) + Meta Cloud ou WhatsAtende B (cliente).
+    Modo meta: Cloud API direta no cliente (equipe na Z-API se houver).
     """
     from crm_app.services.whatsapp_config_service import get_active_whatsapp_provider_name
 
@@ -66,6 +81,8 @@ def get_whatsapp_provider(purpose: str = PURPOSE_INTERNO) -> WhatsAppProvider:
         inst: WhatsAppProvider = N8nOutboundProvider()
     elif backend == "whatsatende":
         inst = WhatsAtendeProvider(role=role)
+    elif backend == "meta":
+        inst = MetaCloudProvider()
     else:
         inst = ZapiProvider()
     _cached_providers[key] = inst
