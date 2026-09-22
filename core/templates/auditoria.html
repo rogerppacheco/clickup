@@ -3450,8 +3450,15 @@ async function iniciarBuscaPapOnline() {
             if(!validarChecklist()) return;
             if(!confirm("Aprovar venda como AUDITADA?")) return; 
             $('#loadingOverlay').show();
-            await salvarRascunhoAuditoria();
-            enviarFinalizacao('AUDITADA', $('#script-obs-venda').val(), coletarDadosAuditoria()); 
+            try {
+                await salvarRascunhoAuditoria();
+                enviarFinalizacao('AUDITADA', $('#script-obs-venda').val(), coletarDadosAuditoria());
+            } catch (e) {
+                console.error("Erro ao salvar rascunho na aprovação:", e);
+                const msg = (e && e.message) ? e.message : "Erro desconhecido";
+                alert("Não foi possível salvar as alterações (Rascunho) antes de aprovar. Verifique se há algum campo inválido. Erro: " + msg);
+                $('#loadingOverlay').hide();
+            }
         }
 
 
@@ -3850,16 +3857,24 @@ async function iniciarBuscaPapOnline() {
             const stId = $('#repro-status').val(); const obs = $('#repro-obs').val(); const stText = $('#repro-status option:selected').text().toUpperCase();
             if(!stId || !obs) { alert('Selecione status e motivo.'); return; }
             $('#loadingOverlay').show();
-            if (stText.includes('AGUARDANDO PAGAMENTO')) {
-                const os = ($('#repro-os').val() || '').trim(), dt = $('#repro-data').val(), tr = $('#repro-turno').val();
-                if (!os || !dt || !tr) { alert('O.S, Data e Turno obrigatórios.'); $('#loadingOverlay').hide(); return; }
-                if (!validarFormatoOs(os, 'AGUARDANDO PAGAMENTO')) { $('#loadingOverlay').hide(); return; }
-                await salvarRascunhoAuditoria({ ordem_servico: os, data_agendamento: dt, periodo_agendamento: tr });
-                const d = coletarDadosAuditoria(); d.ordem_servico = os; d.data_agendamento = dt; d.periodo_agendamento = tr;
-                enviarFinalizacao(stId, obs, d, true);
-            } else {
-                await salvarRascunhoAuditoria();
-                enviarFinalizacao(stId, obs, coletarDadosAuditoria(), true);
+            
+            try {
+                if (stText.includes('AGUARDANDO PAGAMENTO')) {
+                    const os = ($('#repro-os').val() || '').trim(), dt = $('#repro-data').val(), tr = $('#repro-turno').val();
+                    if (!os || !dt || !tr) { alert('O.S, Data e Turno obrigatórios.'); $('#loadingOverlay').hide(); return; }
+                    if (!validarFormatoOs(os, 'AGUARDANDO PAGAMENTO')) { $('#loadingOverlay').hide(); return; }
+                    await salvarRascunhoAuditoria({ ordem_servico: os, data_agendamento: dt, periodo_agendamento: tr });
+                    const d = coletarDadosAuditoria(); d.ordem_servico = os; d.data_agendamento = dt; d.periodo_agendamento = tr;
+                    enviarFinalizacao(stId, obs, d, true);
+                } else {
+                    await salvarRascunhoAuditoria();
+                    enviarFinalizacao(stId, obs, coletarDadosAuditoria(), true);
+                }
+            } catch (e) {
+                console.error("Erro ao salvar rascunho na reprovação:", e);
+                const msg = (e && e.message) ? e.message : "Erro desconhecido";
+                alert("Não foi possível salvar as alterações (Rascunho) antes de reprovar. Verifique se há algum campo inválido. Erro: " + msg);
+                $('#loadingOverlay').hide();
             }
         }
 
