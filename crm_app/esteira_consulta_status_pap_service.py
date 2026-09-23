@@ -34,12 +34,14 @@ def _run_django_sync(func, timeout_seconds: int = 120):
 
     def worker():
         try:
-            django.db.close_old_connections()
+            for conn in django.db.connections.all():
+                conn.close()
             q.put(('ok', func()))
         except Exception as e:
             q.put(('err', e))
         finally:
-            django.db.close_old_connections()
+            for conn in django.db.connections.all():
+                conn.close()
 
     t = threading.Thread(target=worker, daemon=True, name='consulta-esteira-orm')
     t.start()
