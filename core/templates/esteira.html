@@ -2692,6 +2692,15 @@ min-width: 100%;
                                 + (u.erros ? ` ⚠${u.erros}` : '');
                             setTimeout(() => { badge.style.display = 'none'; }, 20000);
                         }
+                    } else if (u.status === 'erro' || u.status === 'interrompido') {
+                        const badge = document.getElementById('sync-status-pap-badge');
+                        if (badge) {
+                            badge.style.display = 'inline-block';
+                            badge.className = 'badge bg-danger ms-1';
+                            badge.textContent = `✕ Parou: ${u.mensagem_erro || 'Erro desconhecido'}`.substring(0, 60);
+                            badge.title = u.mensagem_erro || 'Erro na consulta';
+                            setTimeout(() => { badge.style.display = 'none'; }, 20000);
+                        }
                     }
                     if (typeof carregarVendas === 'function') carregarVendas(true);
                     if (typeof carregarContadoresEsteira === 'function') carregarContadoresEsteira();
