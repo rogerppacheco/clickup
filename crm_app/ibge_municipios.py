@@ -170,3 +170,4 @@ def get_nome_municipio_por_codigo(codigo_municipio, uf=None):
             if nome:
                 return nome
     return None
+

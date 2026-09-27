@@ -197,6 +197,33 @@ def _usuario_ativo_por_telefone(telefone):
         return None
 
 
+_ETAPAS_BOT_PUBLICO = frozenset(
+    {
+        "dfv_cep",
+        "cdoe_codigo",
+        "cdoe_uf",
+        "cdoe_escolher_cidade",
+        "cdoe_escolher_rua",
+    }
+)
+
+
+def _sessao_bot_publica_ativa(telefone: str) -> bool:
+    """Fluxos DFV/CDOE abertos sem usuário interno cadastrado."""
+    try:
+        from crm_app.models import SessaoWhatsapp
+
+        etapa = (
+            SessaoWhatsapp.objects.filter(telefone=telefone)
+            .values_list("etapa", flat=True)
+            .first()
+        )
+        return bool(etapa and etapa in _ETAPAS_BOT_PUBLICO)
+    except Exception as e:
+        logger.warning("[Webhook] Erro ao verificar sessão pública: %s", e)
+        return False
+
+
 def _saudacao_por_hora():
     """Retorna 'Bom Dia', 'Boa Tarde' ou 'Boa Noite' conforme o horário (timezone do servidor)."""
     try:
@@ -307,6 +334,16 @@ def _consultar_status_e_disparar_online(
 
     resposta = f'🔎 Buscando pedido por {label}...\n\n{resultado_status}'
     os_filtro = valor if tipo == 'OS' else None
+
+    from crm_app.services.pap_operadora_guard import bloqueio_por_documento
+
+    bloqueio_pap = bloqueio_por_documento(
+        cpf_para_consulta or (valor if tipo == 'CPF' else ''),
+        os_filtro,
+    )
+    if bloqueio_pap:
+        fazer_consulta_online = False
+        resposta += f"\n\n{bloqueio_pap}"
 
     if fazer_consulta_online and cpf_para_consulta:
         run_id = str(int(time.time() * 1000))
@@ -683,6 +720,12 @@ def _iniciar_fluxo_credito(telefone: str, sessao) -> str:
     Inicia o fluxo de análise de crédito via WhatsApp.
     Valida autorizar_analise_credito_wpp e limites (1 min, 15/dia).
     """
+    from crm_app.services.pap_operadora_guard import MSG_PAP_DESATIVADO, pap_nio_habilitado
+
+    # A análise roda dentro do PAP Nio e ainda não há pedido para inferir a operadora.
+    if not pap_nio_habilitado():
+        return MSG_PAP_DESATIVADO
+
     usuario = _buscar_usuario_por_telefone(telefone)
     if not usuario:
         return (
@@ -2059,7 +2102,12 @@ def _iniciar_fluxo_venda(telefone: str, sessao) -> str:
     """
     from usuarios.models import Usuario
     from django.db.models import Q
-    
+    from crm_app.services.pap_operadora_guard import MSG_PAP_DESATIVADO, pap_nio_habilitado
+
+    # A venda é cadastrada dentro do PAP Nio; sem o PAP liberado não há o que fazer aqui.
+    if not pap_nio_habilitado():
+        return MSG_PAP_DESATIVADO
+
     # Limpar telefone - remover tudo que não for número
     telefone_limpo = re.sub(r'\D', '', telefone)
     logger.info(f"[VENDA] Buscando usuário para telefone: {telefone} -> limpo: {telefone_limpo}")
@@ -6930,7 +6978,7 @@ def _verificar_biometria_venda(telefone: str, sessao, dados: dict) -> str:
 
 def _buscar_record_apoia_por_texto(busca_texto, sessao):
     """
-    Busca no ClickUp Apoia por tag/título/descrição/categoria.
+    Busca no {_site_brand_apoia()} por tag/título/descrição/categoria.
     - 0 resultados: retorna None.
     - 1 resultado: prepara material_para_envio na sessão e retorna mensagem de envio.
     - 2+ resultados: seta etapa material_selecionar e retorna lista numerada.
@@ -6968,10 +7016,10 @@ def _buscar_record_apoia_por_texto(busca_texto, sessao):
                 arquivo_bytes = record_apoia_ler_bytes(arquivo)
                 arquivo_b64 = base64.b64encode(arquivo_bytes).decode('utf-8')
             except (FileNotFoundError, IOError, OSError) as e:
-                logger.error(f"[Webhook] Erro ao ler arquivo ClickUp Apoia id={arquivo.id}: {e}")
+                logger.error(f"[Webhook] Erro ao ler arquivo {_site_brand_apoia()} id={arquivo.id}: {e}")
                 return (
                     f"❌ Arquivo \"{arquivo.titulo}\" não está disponível no servidor.\n\n"
-                    "Peça ao administrador para reenviar o material no módulo Apoia "
+                    f"Peça ao administrador para reenviar o material no {_site_brand_apoia()} "
                     "(Administração → Limpar registro órfão e fazer upload novamente)."
                 )
 
@@ -7019,7 +7067,7 @@ def _buscar_record_apoia_por_texto(busca_texto, sessao):
             sessao.save()
             return resposta
         except Exception as e:
-            logger.exception("[Webhook] Erro ao preparar arquivo ClickUp Apoia: %s", e)
+            logger.exception(f"[Webhook] Erro ao preparar arquivo {_site_brand_apoia()}: %s", e)
             return f"❌ Erro ao processar arquivo: {str(e)}"
 
     arquivos_lista = list(arquivos)
@@ -7066,7 +7114,7 @@ def _caption_padrao_material(material_para_envio):
 
 def _enviar_material_record_apoia_whatsapp(whatsapp_service, telefone, material_para_envio, caption=None):
     """
-    Envia material ClickUp Apoia (imagem ou documento) com legenda no mesmo envio.
+    Envia material {_site_brand_apoia()} (imagem ou documento) com legenda no mesmo envio.
     Retorna True se a mídia foi enviada com sucesso.
     """
     if not material_para_envio:
@@ -8467,7 +8515,16 @@ def processar_webhook_whatsapp(data, request=None):
 
     # Verificar se o número está associado a um usuário ativo (em grupo, usar participant_phone)
     usuario_whatsapp = _usuario_ativo_por_telefone(telefone_formatado_usuario)
-    if not usuario_whatsapp:
+    comandos_liberados_sem_cadastro = (
+        mensagem_limpa in {"DFV", "CDOE", "FACHADA", "FACADA"}
+        or mensagem_limpa.startswith("CDOE ")
+    )
+    sessao_publica_ativa = _sessao_bot_publica_ativa(telefone_formatado)
+    if (
+        not usuario_whatsapp
+        and not comandos_liberados_sem_cadastro
+        and not sessao_publica_ativa
+    ):
         # Cliente com telefone cadastrado em venda: resposta com dados do pedido + aviso BO/Diretoria
         if mensagem_texto and (mensagem_texto or "").strip():
             try:
@@ -8559,7 +8616,7 @@ def processar_webhook_whatsapp(data, request=None):
         return {'status': 'ok', 'mensagem': 'Usuário não autorizado a chamar no bot'}
 
     def _enviar_material_record_apoia_da_sessao(caption=None):
-        """Envia material ClickUp Apoia da sessão com legenda (sem mensagem de texto separada)."""
+        """Envia material Record Apoia da sessão com legenda (sem mensagem de texto separada)."""
         if not sessao:
             return False
         try:
@@ -8889,13 +8946,13 @@ def processar_webhook_whatsapp(data, request=None):
             resposta = "Digite a palavra-chave para buscar materiais ou documentos (ex: boleto, contrato, instalacao):"
             return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta))
 
-        # Comando CLICKUP APOIA / APOIA (repositório de arquivos - mesmo fluxo que Material)
-        if mensagem_limpa in ['APOIA', 'CLICKUP APOIA', 'CLICKUPAPOIA', 'CLICKUP APOIA', 'CLICKUPAPOIA']:
+        # Comando RECORD APOIA / APOIA (repositório de arquivos - mesmo fluxo que Material)
+        if mensagem_limpa in ['APOIA', 'RECORD APOIA', 'RECORDAPOIA', 'ROSSO APOIA', 'ROSSOAPOIA']:
             logger.info(f"[Webhook] Comando APOIA reconhecido!")
             sessao.etapa = 'material_buscar'
             sessao.dados_temp = {}
             sessao.save()
-            marca_apoia = getattr(settings, 'SITE_MODULE_PREFIX', 'ClickUp')
+            marca_apoia = getattr(settings, 'SITE_MODULE_PREFIX', 'Rosso')
             resposta = (
                 f"📁 *{marca_apoia} Apoia* – Buscar arquivos/materiais\n\n"
                 "Digite a *palavra-chave* para buscar (ex: Globoplay, boleto, contrato, instalacao):"
@@ -9003,8 +9060,8 @@ def processar_webhook_whatsapp(data, request=None):
             resposta = ''.join(linhas_menu)
             return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta))
 
-        # Mensagem livre na etapa inicial: pode ser busca de material (ClickUp Apoia) ou dúvida (IA).
-        # Se parecer pergunta/dúvida ou pedido de planos Nio, tentar a IA primeiro; senão tentar ClickUp Apoia e depois IA como fallback.
+        # Mensagem livre na etapa inicial: pode ser busca de material (Record Apoia) ou dúvida (IA).
+        # Se parecer pergunta/dúvida ou pedido de planos Nio, tentar a IA primeiro; senão tentar Record Apoia e depois IA como fallback.
         _mensagem_strip = (mensagem_texto or "").strip()
         _msg_lower = _mensagem_strip.lower()
         _parece_pergunta = (
@@ -9046,15 +9103,15 @@ def processar_webhook_whatsapp(data, request=None):
                     return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta_fallback))
             except Exception as e:
                 logger.warning("[Webhook] Fallback IA (pergunta) falhou: %s", e)
-        # Busca direta por tag do ClickUp Apoia (sem precisar digitar Material/Apoia)
+        # Busca direta por tag do Record Apoia (sem precisar digitar Material/Apoia)
         if etapa_atual == 'inicial' and mensagem_texto and len(mensagem_texto.strip()) >= 2:
             try:
-                logger.info(f"[Webhook] Busca direta por tag ClickUp Apoia: \"{mensagem_texto.strip()}\"")
+                logger.info(f"[Webhook] Busca direta por tag Record Apoia: \"{mensagem_texto.strip()}\"")
                 resposta_busca = _buscar_record_apoia_por_texto(mensagem_texto.strip(), sessao)
                 if resposta_busca is not None:
                     return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta_busca))
             except Exception as e:
-                logger.exception("[Webhook] Erro na busca direta ClickUp Apoia: %s", e)
+                logger.exception("[Webhook] Erro na busca direta Record Apoia: %s", e)
         
         # === PROCESSAMENTO POR ETAPA ===
         elif etapa_atual.startswith('roubo_'):
@@ -9148,6 +9205,15 @@ def processar_webhook_whatsapp(data, request=None):
                 sessao.dados_temp = {}
                 sessao.save()
                 return _enviar_resposta_e_retornar("Consulta *DFV* cancelada.")
+
+            if mensagem_limpa == 'DFV':
+                sessao.dados_temp = {}
+                sessao.save()
+                resposta = (
+                    "Por favor, digite o *CEP* para consultar fachadas no Power BI ao vivo "
+                    "(todas as regionais — apenas números; hífen é aceito):"
+                )
+                return _enviar_resposta_e_retornar(resposta)
 
             cep_limpo = limpar_cep_dfv(mensagem_texto)
             if len(cep_limpo) != 8:
@@ -10118,7 +10184,7 @@ def processar_webhook_whatsapp(data, request=None):
                     "⚠️ *Confirmação antes de enviar*\n\n"
                     "Confirme que você *não* está tentando criar um complemento ou fachada que não existe "
                     "para recompra, ou anexar fotos/comprovante que não sejam verdadeiros, ou algo que possa "
-                    f"prejudicar a {getattr(settings, 'SITE_BRAND', 'ClickUp')} como parceiro Nio.\n\n"
+                    f"prejudicar a {getattr(settings, 'SITE_BRAND', 'Rosso')} como parceiro Nio.\n\n"
                     "Ao confirmar, a solicitação irá para a *Auditoria* (envio ao Google Forms pelo auditor).\n\n"
                     "Digite *SIM* para enviar ou *CANCELAR* para desistir."
                 )
@@ -11343,3 +11409,11 @@ def processar_webhook_whatsapp(data, request=None):
     except Exception as e:
         logger.exception(f"[Webhook] Erro ao processar mensagem: {e}")
         return {'status': 'erro', 'mensagem': str(e)}
+
+# Injetado de nova-velox
+def _site_brand() -> str:
+    return getattr(settings, "SITE_BRAND_NAME", "Futura Telecom")
+
+# Injetado de nova-velox
+def _site_brand_apoia() -> str:
+    return f"{_site_brand()} Apoia"

@@ -17,7 +17,9 @@ _cached_providers: Dict[Tuple[str, str, str], WhatsAppProvider] = {}
 
 def clear_whatsapp_provider_cache() -> None:
     """Invalida cache in-process (ex.: após salvar provedor na mesma réplica)."""
-    _cached_providers.clear()
+    global _cached_provider_name, _cached_provider
+    _cached_provider_name = None
+    _cached_provider = None
 
 
 def resolve_backend_for_purpose(provider_name: str, purpose: str) -> Tuple[str, str]:
@@ -65,24 +67,28 @@ def get_whatsapp_provider(purpose: str = PURPOSE_INTERNO) -> WhatsAppProvider:
     purpose=interno → bot/equipe/grupos (Número A).
     purpose=cliente → cliente final / Cloud API (Número B).
 
-    Modo hybrid: Z-API (interno) + Meta Cloud ou WhatsAtende B (cliente).
-    Modo meta: Cloud API direta no cliente (equipe na Z-API se houver).
+    Modo hybrid: Z-API (interno) + WhatsAtende B (cliente).
     """
     from crm_app.services.whatsapp_config_service import get_active_whatsapp_provider_name
 
     provider_name = get_active_whatsapp_provider_name()
     backend, role = resolve_backend_for_purpose(provider_name, purpose)
+    if role == PURPOSE_CLIENTE:
+        from crm_app.services.whatsapp_config_service import canal_cliente_pronto
+
+        if not canal_cliente_pronto():
+            backend = BACKEND_CLIENTE_BLOQUEADO
     key = (provider_name, backend, role)
     cached = _cached_providers.get(key)
     if cached is not None:
         return cached
 
-    if backend == "evolution":
-        inst: WhatsAppProvider = N8nOutboundProvider()
+    if backend == BACKEND_CLIENTE_BLOQUEADO:
+        inst: WhatsAppProvider = ClienteCanalBloqueadoProvider()
+    elif backend == "evolution":
+        inst = N8nOutboundProvider()
     elif backend == "whatsatende":
         inst = WhatsAtendeProvider(role=role)
-    elif backend == "meta":
-        inst = MetaCloudProvider()
     else:
         inst = ZapiProvider()
     _cached_providers[key] = inst

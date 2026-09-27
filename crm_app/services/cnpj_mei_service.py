@@ -770,3 +770,4 @@ def backfill_classificacao_mei_lote(
         'erros': erros,
         'vendas_atualizadas': vendas_atualizadas,
     }
+

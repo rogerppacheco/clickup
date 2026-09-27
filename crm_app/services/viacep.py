@@ -61,3 +61,4 @@ def get_municipio_por_cep(cep, cache=None):
     """
     res = consultar_cep(cep, cache=cache)
     return res.get('localidade') if res else None
+

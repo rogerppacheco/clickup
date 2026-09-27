@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 EXT_ID = "cgmpkggpemhfojadajkcofmjmbhbihla"
-EXT_DIR = Path(r"C:\site-clickup\chrome_extension_inclusao_forms").resolve()
+EXT_DIR = Path(r"C:\site-bn\chrome_extension_inclusao_forms").resolve()
 PREFS = Path(os.environ["LOCALAPPDATA"]) / "Google" / "Chrome" / "User Data" / "Default" / "Preferences"
 EDGE_PREFS = [
     Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "Edge" / "User Data" / "Default" / "Preferences",
@@ -116,3 +116,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

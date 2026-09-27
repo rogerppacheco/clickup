@@ -1,4 +1,4 @@
-# site-clickup/usuarios/permissions.py
+# site-bn/usuarios/permissions.py
 
 from rest_framework import permissions
 

@@ -130,3 +130,4 @@ def enviar_teams_operacional(
     if not ok:
         logger.warning("[Teams] Falha (%s): %s", source, detalhe)
     return ok, detalhe
+

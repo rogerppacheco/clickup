@@ -75,7 +75,7 @@ def _env_ou_decouple(chave: str, default: str = "") -> str:
 
 def _email_formulario() -> str:
     """E-mail preenchido no *campo* do Google Forms (não é a conta de login)."""
-    return _env_ou_decouple("GOOGLE_FORM_EMAIL", "")
+    return _env_ou_decouple("GOOGLE_FORM_EMAIL", "comunicacao@futuratelecom.com.br")
 
 
 def _email_login_google() -> str:
@@ -1530,3 +1530,4 @@ def preencher_formulario_inclusao(
         if od_pasta_used:
             msg += f"\n\n📁 Arquivos salvos no R2: {od_pasta_used}\nVocê pode anexá-los manualmente."
         return False, msg
+

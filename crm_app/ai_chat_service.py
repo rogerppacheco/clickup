@@ -116,3 +116,4 @@ def sugerir_status_boas_vindas(texto: str) -> str:
         if termo in t and len(t) < 100:  # mensagem curta e positiva
             return 'OK'
     return 'OUTROS'
+

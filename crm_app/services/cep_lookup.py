@@ -153,3 +153,4 @@ def get_cache_stats():
     """Retorna quantidade de CEPs no cache persistente (para diagnóstico)."""
     _load_file_cache()
     return len(_FILE_CACHE)
+

@@ -117,3 +117,4 @@ def webhook_deve_processar_assincrono() -> bool:
     if getattr(settings, "WHATSAPP_WORKER_MODE", False):
         return False
     return bool(getattr(settings, "WHATSAPP_WEBHOOK_ASYNC", True))
+

@@ -56,6 +56,16 @@ class Usuario(AbstractUser):
     # --- RELAÇÕES ---
     perfil = models.ForeignKey(Perfil, on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios')
     supervisor = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='liderados')
+    operadoras_permitidas = models.ManyToManyField(
+        'crm_app.Operadora',
+        blank=True,
+        related_name='usuarios_com_acesso',
+        verbose_name='Operadoras permitidas',
+        help_text=(
+            'Operadoras cujos registros o usuário pode consultar e cadastrar. '
+            'Sem seleção, o usuário pode acessar todas as operadoras.'
+        ),
+    )
     
     # --- FINANCEIRO ---
     valor_almoco = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -242,6 +252,7 @@ class Usuario(AbstractUser):
         verbose_name="Pode usar a ferramenta Gestão de Acessos?",
         help_text="Se marcado, o usuário verá o card 'Gestão de Acessos' na área interna e poderá gerenciar usuários (exceto perfis Admin e Diretoria)."
     )
+
     pode_importar_nio_terceiros = models.BooleanField(
         default=False,
         verbose_name="Pode importar NIO Terceiros?",

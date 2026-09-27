@@ -315,3 +315,4 @@ def aplicar_faltas_automaticas_12h() -> dict[str, Any]:
     }
     logger.info("[Presença 12h] Resumo: %s", resumo)
     return resumo
+

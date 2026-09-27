@@ -148,7 +148,7 @@ def buscar_coordenadas_viacep_nominatim(cep, numero):
         # Ex: "Rua das Flores, 123, Belo Horizonte - MG, Brasil"
         query = f"{logradouro}, {numero}, {cidade} - {uf}, Brasil"
         
-        headers = {'User-Agent': 'ClickUpCRM/1.0'}
+        headers = {'User-Agent': 'RecordPAP_System/2.0'}
         url_geo = "https://nominatim.openstreetmap.org/search"
         # O '1' no limit tenta pegar o mais preciso
         params = {'q': query, 'format': 'json', 'limit': 1}

@@ -49,3 +49,4 @@ class TeamsNotificationServiceTest(SimpleTestCase):
             url,
             "https://site-clickup-production.up.railway.app/media/auditoria_sem_slot/2026/07/print.jpg",
         )
+

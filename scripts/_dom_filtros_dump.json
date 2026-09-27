@@ -1,0 +1,228 @@
+{
+  "hasDrawer": true,
+  "drawerCls": "MuiDrawer-root MuiDrawer-modal drawer",
+  "inputs": [
+    {
+      "ph": "",
+      "type": "text",
+      "id": "react-select-10-input",
+      "name": "",
+      "cls": "",
+      "val": "",
+      "readonly": false,
+      "disabled": false,
+      "vis": true,
+      "parent": ""
+    },
+    {
+      "ph": "",
+      "type": "text",
+      "id": "react-select-11-input",
+      "name": "",
+      "cls": "",
+      "val": "",
+      "readonly": false,
+      "disabled": false,
+      "vis": true,
+      "parent": ""
+    },
+    {
+      "ph": "",
+      "type": "text",
+      "id": "react-select-12-input",
+      "name": "",
+      "cls": "",
+      "val": "",
+      "readonly": false,
+      "disabled": true,
+      "vis": true,
+      "parent": ""
+    },
+    {
+      "ph": "",
+      "type": "text",
+      "id": "react-select-13-input",
+      "name": "",
+      "cls": "",
+      "val": "",
+      "readonly": false,
+      "disabled": false,
+      "vis": true,
+      "parent": ""
+    },
+    {
+      "ph": "Pesquisar...",
+      "type": "text",
+      "id": "input-busca",
+      "name": "",
+      "cls": "",
+      "val": "",
+      "readonly": false,
+      "disabled": false,
+      "vis": true,
+      "parent": "sc-VigVT eetSZT sc-gqjmRU dJciEc newFilter"
+    },
+    {
+      "ph": "",
+      "type": "text",
+      "id": "",
+      "name": "",
+      "cls": "MuiInputBase-input MuiOutlinedInput-input MuiInputBase-inputAdornedEnd MuiOutlinedInput-inputAdornedEnd",
+      "val": "12/09/2026",
+      "readonly": false,
+      "disabled": false,
+      "vis": true,
+      "parent": "MuiInputBase-root MuiOutlinedInput-root MuiInputBase-formControl MuiInputBase-adornedEnd MuiOutlined"
+    },
+    {
+      "ph": "",
+      "type": "text",
+      "id": "",
+      "name": "",
+      "cls": "MuiInputBase-input MuiOutlinedInput-input MuiInputBase-inputAdornedEnd MuiOutlinedInput-inputAdornedEnd",
+      "val": "12/09/2026",
+      "readonly": false,
+      "disabled": false,
+      "vis": true,
+      "parent": "MuiInputBase-root MuiOutlinedInput-root MuiInputBase-formControl MuiInputBase-adornedEnd MuiOutlined"
+    }
+  ],
+  "buttons": [
+    {
+      "t": "",
+      "disabled": false,
+      "cls": "MuiButtonBase-root MuiIconButton-root"
+    },
+    {
+      "t": "Filtros",
+      "disabled": false,
+      "cls": "MuiButtonBase-root MuiIconButton-root"
+    },
+    {
+      "t": "",
+      "disabled": false,
+      "cls": "MuiButtonBase-root MuiIconButton-root"
+    },
+    {
+      "t": "",
+      "disabled": false,
+      "cls": "MuiButtonBase-root MuiIconButton-root"
+    },
+    {
+      "t": "Filtrar",
+      "disabled": true,
+      "cls": "btn-filters-new"
+    }
+  ],
+  "labels": [
+    {
+      "t": "Filtros\nTipo\nVenda\nStatus Primário\nSelecione...\nStatus Secun",
+      "cls": "MuiPaper-root MuiDrawer-paper MuiDrawer-paperAnchorRight MuiPaper-elevation16"
+    },
+    {
+      "t": "Tipo\nVenda\nStatus Primário\nSelecione...\nStatus Secundário\nSe",
+      "cls": "mt-n3 pb-4 col"
+    },
+    {
+      "t": "Tipo\nVenda\nStatus Primário\nSelecione...\nStatus Secundário\nSe",
+      "cls": "col"
+    },
+    {
+      "t": "Tipo\nVenda",
+      "cls": "sc-dRCTWM gFeAVC row"
+    },
+    {
+      "t": "Tipo\nVenda",
+      "cls": "col"
+    },
+    {
+      "t": "Tipo",
+      "cls": "row row-cols-12"
+    },
+    {
+      "t": "Tipo",
+      "cls": "col-12"
+    },
+    {
+      "t": "Tipo",
+      "cls": "titulo-status-filter"
+    },
+    {
+      "t": "Status Primário\nSelecione...",
+      "cls": "sc-dRCTWM gFeAVC row"
+    },
+    {
+      "t": "Status Primário\nSelecione...",
+      "cls": "col"
+    },
+    {
+      "t": "Status Primário",
+      "cls": "row row-cols-12"
+    },
+    {
+      "t": "Status Primário",
+      "cls": "col-12"
+    },
+    {
+      "t": "Status Primário",
+      "cls": "titulo-status-filter"
+    },
+    {
+      "t": "Status Secundário\nSelecione...",
+      "cls": "sc-dRCTWM gFeAVC row"
+    },
+    {
+      "t": "Status Secundário\nSelecione...",
+      "cls": "col"
+    },
+    {
+      "t": "Status Secundário",
+      "cls": "row row-cols-12"
+    },
+    {
+      "t": "Status Secundário",
+      "cls": "col-12"
+    },
+    {
+      "t": "Status Secundário",
+      "cls": "titulo-status-filter"
+    },
+    {
+      "t": "De\nAté",
+      "cls": "row"
+    },
+    {
+      "t": "De",
+      "cls": "col-lg-6 col-12"
+    },
+    {
+      "t": "De",
+      "cls": "MuiFormControl-root MuiTextField-root enabled"
+    },
+    {
+      "t": "De",
+      "cls": "MuiFormLabel-root MuiInputLabel-root MuiInputLabel-formControl MuiInputLabel-ani"
+    },
+    {
+      "t": "Até",
+      "cls": "col-lg-6 col-12"
+    },
+    {
+      "t": "Até",
+      "cls": "MuiFormControl-root MuiTextField-root enabled"
+    },
+    {
+      "t": "Até",
+      "cls": "MuiFormLabel-root MuiInputLabel-root MuiInputLabel-formControl MuiInputLabel-ani"
+    },
+    {
+      "t": "Filtrar",
+      "cls": "sc-cgHJcJ gqhXmb row"
+    },
+    {
+      "t": "Filtrar",
+      "cls": "col"
+    }
+  ],
+  "text": "Filtros\nTipo\nVenda\nStatus Primário\nSelecione...\nStatus Secundário\nSelecione...\nSegmento\nSelecione...\nPeríodo\nDe\nAté\nFiltrar"
+}

@@ -282,7 +282,6 @@ class PAPNioAutomation:
             optimize_for_credit: Reduz esperas fixas no fluxo de consulta de crédito
             slow_mo: Milissegundos entre ações do Playwright (None = 300 se headless False, 0 se headless)
             record_trace: Se True, grava trace Playwright (inspect em trace.playwright.dev) sem exigir todos os screenshots
-            url_pos_login: Rota para validar sessão após login (ex.: Histórico PAP)
         """
         self.matricula_pap = matricula_pap
         self.senha_pap = senha_pap
@@ -747,6 +746,17 @@ class PAPNioAutomation:
                 )
             
             self.page = self.context.new_page()
+            
+            # Global XHR Interceptor for Debugging 
+            self.captured_global_xhrs = []
+            def _log_req(req):
+                try:
+                    if req.resource_type in ["xhr", "fetch"]:
+                        self.captured_global_xhrs.append(f"{req.method} {req.url}")
+                except:
+                    pass
+            self.page.on("request", _log_req)
+            
             # Timeout padrão alto para evitar "Timeout 5000ms" em produção (rede/React lentos)
             self.page.set_default_timeout(25000)
             self.sessao_iniciada = True

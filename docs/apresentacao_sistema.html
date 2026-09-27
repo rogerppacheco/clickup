@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="pt-BR">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+		<title>Passo a Passo - Sistema ClickUp</title>
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reset.min.css">
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.css">
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/theme/dracula.min.css">
+		<!-- Font Awesome para ícones -->
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <style>
+            .placeholder-img {
+                width: 80%;
+                height: 400px;
+                background: linear-gradient(145deg, #282a36, #44475a);
+                border: 3px dashed #6272a4;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: #f8f8f2;
+                font-size: 24px;
+                margin: 20px auto !important;
+                border-radius: 15px;
+				box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+				transition: transform 0.3s;
+            }
+			.placeholder-img:hover {
+				transform: scale(1.02);
+			}
+            .reveal h2 {
+                color: #ff79c6;
+				text-transform: none;
+				font-weight: 600;
+            }
+			.reveal h3 {
+				color: #8be9fd;
+				text-transform: none;
+			}
+            .reveal ul {
+                font-size: 28px;
+            }
+			.reveal li {
+				margin-bottom: 15px;
+			}
+			.highlight {
+				color: #50fa7b;
+			}
+        </style>
+	</head>
+	<body>
+		<div class="reveal">
+			<div class="slides">
+				
+				<!-- CAPA -->
+				<section>
+					<h2 style="font-size: 2.5em; margin-bottom: 20px;"><i class="fa-solid fa-rocket"></i> Sistema ClickUp</h2>
+					<h3>Fluxo Operacional Passo a Passo</h3>
+					<p style="margin-top: 50px; font-size: 24px; color: #6272a4;">Guia completo de navegação e módulos do sistema</p>
+					<p style="font-size: 18px;">Pressione <span class="highlight">Espaço</span> ou as <span class="highlight">Setas</span> para avançar</p>
+				</section>
+
+				<!-- VISÃO GERAL -->
+				<section>
+					<h2><i class="fa-solid fa-diagram-project"></i> A Jornada da Venda</h2>
+					<p>Como uma venda flui por dentro do nosso sistema:</p>
+					<ul>
+						<li><i class="fa-solid fa-1" style="color: #ffb86c;"></i> <strong>CRM:</strong> Onde a venda nasce.</li>
+						<li><i class="fa-solid fa-2" style="color: #ffb86c;"></i> <strong>Auditoria:</strong> Conferência e qualificação dos dados.</li>
+						<li><i class="fa-solid fa-3" style="color: #ffb86c;"></i> <strong>Esteira:</strong> Agendamento e acompanhamento até a instalação.</li>
+						<li><i class="fa-solid fa-4" style="color: #ffb86c;"></i> <strong>Qualidade:</strong> Pós-venda e prevenção de cancelamentos.</li>
+						<li><i class="fa-solid fa-5" style="color: #ffb86c;"></i> <strong>Comissionamento:</strong> Pagamento e relatórios de performance.</li>
+					</ul>
+				</section>
+
+				<!-- 1. CRM -->
+				<section>
+					<section>
+						<h2><i class="fa-solid fa-users"></i> 1. CRM (Cadastro da Venda)</h2>
+						<p>O início de tudo. Aqui os consultores registram os dados do cliente.</p>
+						<img src="crm_vendas_mockup_1790122180053.jpg" style="width: 90%; height: auto; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.3); margin: 20px auto; display: block;">
+					</section>
+					<section>
+						<h3>O que acontece aqui?</h3>
+						<ul>
+							<li>Coleta de dados pessoais e endereço do cliente.</li>
+							<li>Escolha de plano, forma de pagamento e vencimento.</li>
+							<li>Verificação inicial de viabilidade técnica (se aplicável).</li>
+							<li>A venda entra no sistema com o status inicial <span class="highlight">"SEM TRATAMENTO"</span>.</li>
+						</ul>
+					</section>
+				</section>
+
+				<!-- 2. AUDITORIA -->
+				<section>
+					<section>
+						<h2><i class="fa-solid fa-check-double"></i> 2. Auditoria</h2>
+						<p>A barreira de segurança para garantir vendas saudáveis.</p>
+						<img src="auditoria_mockup_1790122190130.jpg" style="width: 90%; height: auto; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.3); margin: 20px auto; display: block;">
+					</section>
+					<section>
+						<h3>Passo a passo na Auditoria:</h3>
+						<ul>
+							<li>O auditor assume a venda e valida os dados de contato.</li>
+							<li>O roteiro guia a confirmação de cada detalhe com o cliente.</li>
+							<li>Se houver erro (Ex: Biometria, Duplicidade), a venda é <strong>Pendenciada</strong> ou <strong>Reprovada</strong>.</li>
+							<li>Se estiver tudo certo, ela é <strong>Aprovada e Cadastrada</strong> no sistema final (PAP) e recebe uma <span class="highlight">O.S. (Ordem de Serviço)</span>.</li>
+						</ul>
+					</section>
+				</section>
+
+				<!-- 3. ESTEIRA -->
+				<section>
+					<section>
+						<h2><i class="fa-solid fa-truck-fast"></i> 3. Esteira de Instalação</h2>
+						<p>Acompanhamento logístico e técnico.</p>
+						<img src="esteira_mockup_1790122200750.jpg" style="width: 90%; height: auto; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.3); margin: 20px auto; display: block;">
+					</section>
+					<section>
+						<h3>Acompanhando a Instalação:</h3>
+						<ul>
+							<li>A venda aprovada entra com status <span class="highlight">AGENDADO</span>.</li>
+							<li>O acompanhamento é feito em tempo real para evitar perdas.</li>
+							<li>Substatus ajudam a saber se o técnico está a caminho, ou se o cliente pediu reagendamento.</li>
+							<li>Quando o técnico finaliza, o status muda para <span class="highlight">INSTALADA</span>.</li>
+						</ul>
+					</section>
+				</section>
+
+				<!-- 4. QUALIDADE -->
+				<section>
+					<section>
+						<h2><i class="fa-solid fa-headset"></i> 4. Qualidade e Boas Vindas</h2>
+						<p>O foco no pós-venda para evitar Churn (cancelamento precoce).</p>
+						<img src="qualidade_mockup_1790122210903.jpg" style="width: 90%; height: auto; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.3); margin: 20px auto; display: block;">
+					</section>
+					<section>
+						<h3>Garantindo a Retenção:</h3>
+						<ul>
+							<li>Envio de Boas Vindas pelo WhatsApp para o cliente recém ativado.</li>
+							<li>Acompanhamento de OSAB (Ordem de Serviço Aberta) em caso de falha de conexão nos primeiros dias.</li>
+							<li>Tratamento rápido para clientes com risco de cancelamento (FPD/Fraude/Inadimplência precoce).</li>
+						</ul>
+					</section>
+				</section>
+
+				<!-- 5. COMISSIONAMENTO -->
+				<section>
+					<section>
+						<h2><i class="fa-solid fa-sack-dollar"></i> 5. Comissionamento</h2>
+						<p>Fechamento do ciclo com o pagamento do consultor.</p>
+						<img src="comissionamento_mockup_1790122220320.jpg" style="width: 90%; height: auto; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.3); margin: 20px auto; display: block;">
+					</section>
+					<section>
+						<h3>Cálculo e Pagamento:</h3>
+						<ul>
+							<li>Vendas instaladas entram para o fechamento de comissão.</li>
+							<li>O sistema aplica regras baseadas no Plano, Tipo (CPF/CNPJ) e Aceleradores.</li>
+							<li>Descontos podem ser aplicados automaticamente (ex: Cliente inadimplente / Churn).</li>
+							<li>Geração do relatório final de pagamento transparente para o vendedor.</li>
+						</ul>
+					</section>
+				</section>
+
+				<!-- 6. PERFORMANCE -->
+				<section>
+					<section>
+						<h2><i class="fa-solid fa-chart-line"></i> Painel de Performance</h2>
+						<p>A visão do gestor (Dashboard).</p>
+						<img src="performance_mockup_1790122304064.jpg" style="width: 90%; height: auto; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.3); margin: 20px auto; display: block;">
+					</section>
+					<section>
+						<h3>Métricas principais:</h3>
+						<ul>
+							<li>Total de vendas no dia, mês e conversão de auditoria.</li>
+							<li>Taxa de instalação (Agendados vs Instalados).</li>
+							<li>Ranking de vendedores e equipes.</li>
+							<li>Permite tomada de decisão rápida e estratégica baseada em dados em tempo real.</li>
+						</ul>
+					</section>
+				</section>
+
+				<!-- FIM -->
+				<section>
+					<h2><i class="fa-solid fa-flag-checkered"></i> Fim</h2>
+					<p>Este é o ciclo completo que garante velocidade na venda e qualidade na entrega.</p>
+					<br>
+					<p style="font-size: 20px; color: #6272a4;">Os prints gerados ilustram as funcionalidades descritas em cada módulo.</p>
+				</section>
+
+			</div>
+		</div>
+
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.js"></script>
+		<script>
+			Reveal.initialize({
+				hash: true,
+				slideNumber: 'c/t', // Mostra slide atual/total
+				transition: 'convex', // 'none', 'fade', 'slide', 'convex', 'concave', 'zoom'
+				backgroundTransition: 'fade',
+				progress: true,
+				center: true
+			});
+		</script>
+	</body>
+</html>

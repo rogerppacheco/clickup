@@ -1,4 +1,4 @@
-# site-clickup/usuarios/admin.py
+# nova-velox/usuarios/admin.py
 
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
@@ -24,7 +24,13 @@ class CustomUserAdmin(UserAdmin):
     fieldsets = (
         (None, {'fields': ('username', 'password')}),
         ('Informações Pessoais', {'fields': ('first_name', 'last_name', 'email', 'cpf')}),
-        ('Função e Estrutura', {'fields': ('perfil', 'supervisor', 'canal')}),
+        ('Função e Estrutura', {
+            'fields': ('perfil', 'supervisor', 'canal', 'operadoras_permitidas'),
+            'description': (
+                'Operadoras permitidas: sem seleção, o usuário acessa todas. '
+                'Admin também acessa registros sem plano.'
+            ),
+        }),
         ('Financeiro', {'fields': (
             'valor_almoco', 'valor_passagem', 'chave_pix', 'nome_da_conta'
         )}),
@@ -42,7 +48,7 @@ class CustomUserAdmin(UserAdmin):
                 'pap_automacao_vender', 'pap_automacao_credito', 'pap_automacao_pedido', 'pap_automacao_status',
                 'autorizar_historico_pap',
             ),
-            'description': 'Login PAP: se "Disponibilizar login PAP para o bot" estiver desmarcado, o bot não usará este login. Use os checkboxes de automação para definir em quais fluxos (Vender, Crédito, Pedido, Status) este login BO pode ser usado. "Autorizar busca do histórico PAP" libera o login Diretoria no pool do Funil.'
+            'description': 'Login PAP: se "Disponibilizar login PAP para o bot" estiver desmarcado, o bot não usará este login. Use os checkboxes de automação para definir em quais fluxos (Vender, Crédito, Pedido, Status) este login BO pode ser usado.'
         }),
         ('Br Pronto PDV (Biometria)', {
             'fields': (
@@ -57,10 +63,7 @@ class CustomUserAdmin(UserAdmin):
         }),
         ('Delegação', {
             'fields': ('pode_gestao_acessos', 'pode_importar_nio_terceiros'),
-            'description': (
-                'Gestão de Acessos: card na área interna (exceto Admin/Diretoria). '
-                'Importar NIO Terceiros: botão na Gestão de Usuários.'
-            ),
+            'description': 'Se "Pode usar a ferramenta Gestão de Acessos?" estiver marcado, o usuário verá o card Gestão de Acessos na área interna e poderá gerenciar apenas usuários que não são Admin ou Diretoria.'
         }),
         ('WhatsApp', {'fields': ('tel_whatsapp', 'tel_whatsapp_2', 'tel_whatsapp_3')}),
         ('Permissões', {
@@ -72,12 +75,13 @@ class CustomUserAdmin(UserAdmin):
     
     add_fieldsets = UserAdmin.add_fieldsets + (
         ('Informações Adicionais', {
-            'fields': ('perfil', 'supervisor', 'canal', 'cpf'),
+            'fields': ('perfil', 'supervisor', 'canal', 'cpf', 'operadoras_permitidas'),
         }),
     )
+    filter_horizontal = ('groups', 'user_permissions', 'operadoras_permitidas')
 
     list_display = ('username', 'email', 'first_name', 'last_name', 'is_staff', 'get_groups_display', 'perfil', 'canal')
-    list_filter = ('is_staff', 'is_superuser', 'is_active', 'groups', 'perfil', 'canal')
+    list_filter = ('is_staff', 'is_superuser', 'is_active', 'groups', 'perfil', 'canal', 'operadoras_permitidas')
     
     def get_groups_display(self, obj):
         """Mostra os grupos do usuário na listagem"""
