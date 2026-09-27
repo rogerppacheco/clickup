@@ -898,6 +898,7 @@
 
     </div>
 
+
     <div class="modal fade" id="nioTerceirosModal" tabindex="-1">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
             <div class="modal-content">
@@ -1801,6 +1802,7 @@
     if (!userProfile || !['Diretoria', 'Admin'].includes(userProfile) && !isSuperuser) {
         alert('Acesso negado.'); window.location.href = '/area-interna/';
     }
+
 
     (function atualizarVisibilidadeBtnNioTerceiros() {
         const btn = document.getElementById('btn-importar-nio-terceiros');
