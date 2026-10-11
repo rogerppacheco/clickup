@@ -5,7 +5,7 @@ from rest_framework.routers import DefaultRouter
 # IMPORTAÇÃO DAS VIEWS DE AUTH (DO APP USUARIOS)
 from usuarios.views import LoginView, DefinirNovaSenhaView
 
-# Record Apoia APIs
+# Apoia APIs
 from .esteira_gestao_aproveitamento_api import GestaoAproveitamentoEsteiraView
 from .esteira_churn_tratamento_api import EsteiraChurnTratamentoView
 from .record_apoia_api import (
@@ -26,6 +26,12 @@ from .views_whatsapp_ia_governanca import (
     whatsapp_ia_config_view,
     whatsapp_telefones_sem_ia_view,
     whatsapp_telefone_sem_ia_detail_view,
+)
+from .views_whatsapp_atendimento import (
+    AtendimentoWhatsAppAssumirView,
+    AtendimentoWhatsAppConversasView,
+    AtendimentoWhatsAppDetalheView,
+    AtendimentoWhatsAppResponderView,
 )
 from .pedido_ajuda_gc_api import (
     EtapaErroAjudaGcListCreateView,
@@ -140,7 +146,7 @@ from .views import (
     ReverterDescontoMassaView,
     AdiantamentosEsteiraView,
 
-    # --- CDOI (Record Vertical) ---
+    # --- CDOI (Vertical) ---
     CdoiCreateView,  # Criação
     CdoiListView,    # Listagem (NOVO)
     CdoiDashboardView,
@@ -269,6 +275,10 @@ urlpatterns = [
     # Rotas específicas de vendas ANTES do router (evita que "enviar-boas-vindas" seja interpretado como pk)
     path('vendas/enviar-boas-vindas/', EnviarBoasVindasView.as_view(), name='enviar-boas-vindas'),
     # Boas-Vindas Gestão (ferramenta dedicada)
+    path('atendimento-whatsapp/conversas/', AtendimentoWhatsAppConversasView.as_view(), name='atendimento-whatsapp-conversas'),
+    path('atendimento-whatsapp/conversas/<str:telefone>/', AtendimentoWhatsAppDetalheView.as_view(), name='atendimento-whatsapp-detalhe'),
+    path('atendimento-whatsapp/conversas/<str:telefone>/responder/', AtendimentoWhatsAppResponderView.as_view(), name='atendimento-whatsapp-responder'),
+    path('atendimento-whatsapp/conversas/<str:telefone>/assumir/', AtendimentoWhatsAppAssumirView.as_view(), name='atendimento-whatsapp-assumir'),
     path('boas-vindas/instalacoes/', BoasVindasInstalacoesView.as_view(), name='boas-vindas-instalacoes'),
     path('boas-vindas/retornos/', BoasVindasRetornosView.as_view(), name='boas-vindas-retornos'),
     path('boas-vindas/retornos/<int:pk>/', BoasVindasDetalheView.as_view(), name='boas-vindas-detalhe'),
@@ -406,8 +416,8 @@ urlpatterns = [
     path('preco-plano-gdp/', PrecoPlanoGdpLookupView.as_view(), name='preco-plano-gdp'),
     path('logs-importacao-cnpj/', LogsImportacaoCNPJView.as_view(), name='logs-importacao-cnpj'),
     # Webhook WhatsApp - URL para configurar no Z-API / Evolution / WhatsAtende:
-    # Produção Z-API: https://www.recordpap.com.br/api/crm/webhook-whatsapp/
-    # WhatsAtende:    https://www.recordpap.com.br/api/crm/webhook-whatsapp/<WHATSATENDE_WEBHOOK_TOKEN>/
+    # Produção Z-API: {SITE_URL}/api/crm/webhook-whatsapp/
+    # WhatsAtende:    {SITE_URL}/api/crm/webhook-whatsapp/<WHATSATENDE_WEBHOOK_TOKEN>/
     path('webhook-whatsapp/', WebhookWhatsAppView.as_view(), name='webhook-whatsapp'),
     path(
         'webhook-whatsapp/<str:webhook_token>/',
@@ -477,7 +487,7 @@ urlpatterns = [
     path('logs-dfv/', LogsImportacaoDFVView.as_view(), name='logs-dfv'),
     path('logs-recompra/', LogsImportacaoRecompraView.as_view(), name='logs-recompra'),
     
-    # --- RECORD APOIA (Repositório de Arquivos) ---
+    # --- APOIA (Repositório de Arquivos) ---
     path('record-apoia/upload/', RecordApoiaUploadView.as_view(), name='record-apoia-upload'),
     path('record-apoia/list/', RecordApoiaListView.as_view(), name='record-apoia-list'),
     path('record-apoia/download/<int:arquivo_id>/', RecordApoiaDownloadView.as_view(), name='record-apoia-download'),
@@ -506,7 +516,7 @@ urlpatterns = [
     path('automacao-performance/', ConfigurarAutomacaoView.as_view(), name='automacao_performance'),
     path('enviar-imagem-performance/', EnviarImagemPerformanceView.as_view(), name='enviar_imagem_performance'),
     
-    # --- CDOI (Record Vertical) ---
+    # --- CDOI (Vertical) ---
     path('cdoi/novo/', CdoiCreateView.as_view(), name='api-cdoi-novo'),
     path('cdoi/listar/', CdoiListView.as_view(), name='api-cdoi-listar'),
     path('cdoi/dashboard/', CdoiDashboardView.as_view(), name='api-cdoi-dashboard'),

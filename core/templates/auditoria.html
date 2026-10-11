@@ -2,7 +2,7 @@
 
 {% load static %}
 
-{% block title %}Auditoria de Vendas - {{ SITE_BRAND_NAME }}{% endblock %}
+{% block title %}Auditoria de Vendas - {{ SITE_BRAND }}{% endblock %}
 
 {% block extra_head %}
 <script src="https://cdn.jsdelivr.net/npm/jwt-decode@3.1.2/build/jwt-decode.min.js"></script>
@@ -11,7 +11,7 @@
 {% block extra_css %}
 <style>
 /* ==========================================================================
-   Auditoria — estilos theme-aware (Nova Velox Design System v17)
+   Auditoria — estilos theme-aware (Design System v17)
    ========================================================================== */
 .auditoria-shell { max-width: 1600px; width: 100%; }
 .auditoria-page-title { font-size: 1.05rem; margin: 0; color: var(--text-primary); line-height: 1.2; font-weight: 700; }
@@ -2847,9 +2847,9 @@ async function iniciarBuscaPapOnline(opcoes = {}) {
                                     alert(
                                         'Extensão Chrome não detectada.\n\n' +
                                         'Feche o Chrome e execute:\n' +
-                                        'C:\\site-record\\scripts\\abrir_chrome_com_extensao_inclusao.bat\n\n' +
+                                        'C:\\Projeto_Sysr\\site-clickup\\scripts\\abrir_chrome_com_extensao_inclusao.bat\n\n' +
                                         'Ou em chrome://extensions: Modo do desenvolvedor → Carregar sem compactação →\n' +
-                                        'C:\\site-record\\chrome_extension_inclusao_forms'
+                                        'C:\\Projeto_Sysr\\site-clickup\\chrome_extension_inclusao_forms'
                                     );
                                 }
                             }, 600);
@@ -2863,7 +2863,7 @@ async function iniciarBuscaPapOnline(opcoes = {}) {
                 alert(
                     'Extensão Chrome não detectada.\n\n' +
                     'Feche o Chrome e execute:\n' +
-                    'C:\\site-record\\scripts\\abrir_chrome_com_extensao_inclusao.bat'
+                    'C:\\Projeto_Sysr\\site-clickup\\scripts\\abrir_chrome_com_extensao_inclusao.bat'
                 );
                 return;
             }

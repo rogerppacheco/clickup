@@ -12,6 +12,7 @@ from gestao_equipes.views_health import HealthView, MetricsView, ReadyView
 # --- IMPORTS DAS VIEWS NECESSÁRIAS ---
 from usuarios.views import LoginView
 from core.views import calendario_fiscal_view, RegraAutomacaoViewSet, PainelSegundaView
+from crm_app.views_whatsapp_atendimento import page_atendimento_whatsapp
 from crm_app.views_whatsapp_admin import (
     whatsapp_config_api,
     whatsapp_disconnect_api,
@@ -178,6 +179,7 @@ urlpatterns = [
     # --- NOVO: BÔNUS M-10 & FPD ---
     path('bonus-m10/', page_bonus_m10, name='page_bonus_m10'),
     path('boas-vindas/', page_boas_vindas, name='page_boas_vindas'),
+    path('atendimento-whatsapp/', page_atendimento_whatsapp, name='page_atendimento_whatsapp'),
     path('importar-fpd/', TemplateView.as_view(template_name='importar_fpd.html'), name='importar_fpd'),
     path('validacao-fpd/', page_validacao_fpd, name='page_validacao_fpd'),
     path('validacao-churn/', page_validacao_churn, name='page_validacao_churn'),

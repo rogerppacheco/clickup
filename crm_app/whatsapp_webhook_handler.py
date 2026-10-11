@@ -7628,6 +7628,13 @@ def processar_webhook_whatsapp(data, request=None):
     from crm_app.whatsapp_webhook_normalizer import normalizar_webhook
     data = normalizar_webhook(data)
 
+    try:
+        from crm_app.services.whatsapp.atendimento_service import registrar_entrada_webhook
+
+        registrar_entrada_webhook(data)
+    except Exception:
+        logger.exception("[Webhook] Falha ao gravar atendimento WhatsApp")
+
     if getattr(django_settings, 'WHATSAPP_WEBHOOK_FASTPATH', True):
         from crm_app.whatsapp_webhook_fastpath import avaliar_fastpath_zapi
         rapido = avaliar_fastpath_zapi(data)
@@ -8644,7 +8651,7 @@ def processar_webhook_whatsapp(data, request=None):
         return {'status': 'ok', 'mensagem': 'Usuário não autorizado a chamar no bot'}
 
     def _enviar_material_record_apoia_da_sessao(caption=None):
-        """Envia material Record Apoia da sessão com legenda (sem mensagem de texto separada)."""
+        """Envia material Apoia da sessão com legenda (sem mensagem de texto separada)."""
         if not sessao:
             return False
         try:
@@ -8974,13 +8981,13 @@ def processar_webhook_whatsapp(data, request=None):
             resposta = "Digite a palavra-chave para buscar materiais ou documentos (ex: boleto, contrato, instalacao):"
             return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta))
 
-        # Comando RECORD APOIA / APOIA (repositório de arquivos - mesmo fluxo que Material)
-        if mensagem_limpa in ['APOIA', 'RECORD APOIA', 'RECORDAPOIA', 'ROSSO APOIA', 'ROSSOAPOIA']:
+        # Comando CLICKUP APOIA / APOIA (repositório de arquivos - mesmo fluxo que Material)
+        if mensagem_limpa in ['APOIA', 'CLICKUP APOIA', 'CLICKUPAPOIA', 'CLICK UP APOIA']:
             logger.info(f"[Webhook] Comando APOIA reconhecido!")
             sessao.etapa = 'material_buscar'
             sessao.dados_temp = {}
             sessao.save()
-            marca_apoia = getattr(settings, 'SITE_MODULE_PREFIX', 'Rosso')
+            marca_apoia = getattr(settings, 'SITE_MODULE_PREFIX', 'ClickUp')
             resposta = (
                 f"📁 *{marca_apoia} Apoia* – Buscar arquivos/materiais\n\n"
                 "Digite a *palavra-chave* para buscar (ex: Globoplay, boleto, contrato, instalacao):"
@@ -9088,8 +9095,8 @@ def processar_webhook_whatsapp(data, request=None):
             resposta = ''.join(linhas_menu)
             return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta))
 
-        # Mensagem livre na etapa inicial: pode ser busca de material (Record Apoia) ou dúvida (IA).
-        # Se parecer pergunta/dúvida ou pedido de planos Nio, tentar a IA primeiro; senão tentar Record Apoia e depois IA como fallback.
+        # Mensagem livre na etapa inicial: pode ser busca de material (Apoia) ou dúvida (IA).
+        # Se parecer pergunta/dúvida ou pedido de planos Nio, tentar a IA primeiro; senão tentar Apoia e depois IA como fallback.
         _mensagem_strip = (mensagem_texto or "").strip()
         _msg_lower = _mensagem_strip.lower()
         _parece_pergunta = (
@@ -9131,15 +9138,15 @@ def processar_webhook_whatsapp(data, request=None):
                     return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta_fallback))
             except Exception as e:
                 logger.warning("[Webhook] Fallback IA (pergunta) falhou: %s", e)
-        # Busca direta por tag do Record Apoia (sem precisar digitar Material/Apoia)
+        # Busca direta por tag do Apoia (sem precisar digitar Material/Apoia)
         if etapa_atual == 'inicial' and mensagem_texto and len(mensagem_texto.strip()) >= 2:
             try:
-                logger.info(f"[Webhook] Busca direta por tag Record Apoia: \"{mensagem_texto.strip()}\"")
+                logger.info(f"[Webhook] Busca direta por tag Apoia: \"{mensagem_texto.strip()}\"")
                 resposta_busca = _buscar_record_apoia_por_texto(mensagem_texto.strip(), sessao)
                 if resposta_busca is not None:
                     return _enviar_resposta_e_retornar(_com_prefixo_primeira_mensagem(resposta_busca))
             except Exception as e:
-                logger.exception("[Webhook] Erro na busca direta Record Apoia: %s", e)
+                logger.exception("[Webhook] Erro na busca direta Apoia: %s", e)
         
         # === PROCESSAMENTO POR ETAPA ===
         elif etapa_atual.startswith('roubo_'):
@@ -10212,7 +10219,7 @@ def processar_webhook_whatsapp(data, request=None):
                     "⚠️ *Confirmação antes de enviar*\n\n"
                     "Confirme que você *não* está tentando criar um complemento ou fachada que não existe "
                     "para recompra, ou anexar fotos/comprovante que não sejam verdadeiros, ou algo que possa "
-                    f"prejudicar a {getattr(settings, 'SITE_BRAND', 'Rosso')} como parceiro Nio.\n\n"
+                    f"prejudicar a {getattr(settings, 'SITE_BRAND', 'ClickUp')} como parceiro Nio.\n\n"
                     "Ao confirmar, a solicitação irá para a *Auditoria* (envio ao Google Forms pelo auditor).\n\n"
                     "Digite *SIM* para enviar ou *CANCELAR* para desistir."
                 )
@@ -11436,10 +11443,8 @@ def processar_webhook_whatsapp(data, request=None):
         logger.exception(f"[Webhook] Erro ao processar mensagem: {e}")
         return {'status': 'erro', 'mensagem': str(e)}
 
-# Injetado de nova-velox
 def _site_brand() -> str:
-    return getattr(settings, "SITE_BRAND_NAME", "Futura Telecom")
+    return getattr(settings, "SITE_BRAND", "ClickUp")
 
-# Injetado de nova-velox
 def _site_brand_apoia() -> str:
     return f"{_site_brand()} Apoia"

@@ -1,5 +1,5 @@
 """
-Publica .playwright_vtop_state.json no Railway (site-bn + scheduler)
+Publica .playwright_vtop_state.json no Railway (site-clickup + scheduler)
 como VTOP_STORAGE_STATE_B64.
 
 Fluxo:
@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".playwright_vtop_state.json"
-SERVICES = ("site-bn", "site-bn-scheduler")
+SERVICES = ("site-clickup", "site-clickup-scheduler")
 
 
 def _set_vars(service: str, b64: str) -> None:

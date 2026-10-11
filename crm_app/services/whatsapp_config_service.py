@@ -334,19 +334,16 @@ def update_whatsapp_config(
     clear_whatsapp_provider_cache()
     return cfg
 
-# Injetado de site-bn
 def _credenciais_meta_ok() -> bool:
     return bool(
         (getattr(settings, "META_CLOUD_ACCESS_TOKEN", "") or "").strip()
         and (getattr(settings, "META_CLOUD_PHONE_NUMBER_ID", "") or "").strip()
     )
 
-# Injetado de site-bn
 def credenciais_meta_cloud_ok() -> bool:
     """Token de system user + phone_number_id — mínimos para POST /messages."""
     return _credenciais_meta_ok()
 
-# Injetado de site-bn
 def backend_cliente_efetivo() -> str:
     """Backend real dos envios a cliente: meta | whatsatende_b | zapi | evolution."""
     name = get_active_whatsapp_provider_name()

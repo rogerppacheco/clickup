@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-EXT_DIR = str(Path(r"C:\site-bn\chrome_extension_inclusao_forms").resolve())
+EXT_DIR = str(Path(r"C:\Projeto_Sysr\site-clickup\chrome_extension_inclusao_forms").resolve())
 
 
 def cdp_http(port: int, path: str) -> dict | list:

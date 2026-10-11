@@ -58,7 +58,6 @@ class TestWebhookTokenWhatsAtende(SimpleTestCase):
         )
 
 
-# Injetado de site-clickup
 class TestWebhookTokenWhatsAtende(SimpleTestCase):
     def setUp(self) -> None:
         self.factory = RequestFactory()

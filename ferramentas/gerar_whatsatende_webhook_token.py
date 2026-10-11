@@ -4,7 +4,7 @@ Gera WHATSATENDE_WEBHOOK_TOKEN (segredo do path do webhook).
 Uso:
   python ferramentas/gerar_whatsatende_webhook_token.py
   python ferramentas/gerar_whatsatende_webhook_token.py --bytes 32
-  python ferramentas/gerar_whatsatende_webhook_token.py --site-url https://site-bn-production.up.railway.app
+  python ferramentas/gerar_whatsatende_webhook_token.py --site-url https://site-clickup-production.up.railway.app
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--site-url",
-        default="https://site-bn-production.up.railway.app",
+        default="https://site-clickup-production.up.railway.app",
         help="Base para montar a URL do webhook",
     )
     args = parser.parse_args(argv)

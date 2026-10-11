@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-EXT_DIR = Path(r"C:\site-bn\chrome_extension_inclusao_forms").resolve()
+EXT_DIR = Path(r"C:\Projeto_Sysr\site-clickup\chrome_extension_inclusao_forms").resolve()
 MANIFEST_PATH = EXT_DIR / "manifest.json"
 KEY_PEM_PATH = EXT_DIR / ".dev_private_key.pem"
 
